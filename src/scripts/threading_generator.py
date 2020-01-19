@@ -18,6 +18,7 @@
 # limitations under the License.
 #
 # Author: Mike Stroyan <stroyan@google.com>
+# Author: Mark Lobodzinski <mark@lunarg.com>
 
 import os,re,sys
 from generator import *
@@ -134,47 +135,29 @@ class ThreadOutputGenerator(OutputGenerator):
     def paramIsPointer(self, param):
         ispointer = False
         for elem in param:
-            #write('paramIsPointer '+elem.text, file=sys.stderr)
-            #write('elem.tag '+elem.tag, file=sys.stderr)
-            #if (elem.tail is None):
-            #    write('elem.tail is None', file=sys.stderr)
-            #else:
-            #    write('elem.tail '+elem.tail, file=sys.stderr)
             if ((elem.tag is not 'type') and (elem.tail is not None)) and '*' in elem.tail:
                 ispointer = True
-            #    write('is pointer', file=sys.stderr)
         return ispointer
+
+    # Check if an object is a non-dispatchable handle
+    def isHandleTypeNonDispatchable(self, handletype):
+        handle = self.registry.tree.find("types/type/[name='" + handletype + "'][@category='handle']")
+        if handle is not None and handle.find('type').text == 'VK_DEFINE_NON_DISPATCHABLE_HANDLE':
+            return True
+        else:
+            return False
+
+    # Check if an object is a dispatchable handle
+    def isHandleTypeDispatchable(self, handletype):
+        handle = self.registry.tree.find("types/type/[name='" + handletype + "'][@category='handle']")
+        if handle is not None and handle.find('type').text == 'VK_DEFINE_HANDLE':
+            return True
+        else:
+            return False
+
     def makeThreadUseBlock(self, cmd, functionprefix):
         """Generate C function pointer typedef for <command> Element"""
         paramdecl = ''
-        thread_check_dispatchable_objects = [
-            "VkCommandBuffer",
-            "VkDevice",
-            "VkInstance",
-            "VkQueue",
-        ]
-        thread_check_nondispatchable_objects = [
-            "VkBuffer",
-            "VkBufferView",
-            "VkCommandPool",
-            "VkDescriptorPool",
-            "VkDescriptorSetLayout",
-            "VkDeviceMemory",
-            "VkEvent",
-            "VkFence",
-            "VkFramebuffer",
-            "VkImage",
-            "VkImageView",
-            "VkPipeline",
-            "VkPipelineCache",
-            "VkPipelineLayout",
-            "VkQueryPool",
-            "VkRenderPass",
-            "VkSampler",
-            "VkSemaphore",
-            "VkShaderModule",
-        ]
-
         # Find and add any parameters that are thread unsafe
         params = cmd.findall('param')
         for param in params:
@@ -214,6 +197,7 @@ class ThreadOutputGenerator(OutputGenerator):
                         # externsync can list members to synchronize
                         for member in externsync.split(","):
                             member = str(member).replace("::", "->")
+                            member = str(member).replace(".", "->")
                             paramdecl += '    ' + functionprefix + 'WriteObject(my_data, ' + member + ');\n'
                 else:
                     paramtype = param.find('type')
@@ -221,9 +205,16 @@ class ThreadOutputGenerator(OutputGenerator):
                         paramtype = paramtype.text
                     else:
                         paramtype = 'None'
-                    if paramtype in thread_check_dispatchable_objects or paramtype in thread_check_nondispatchable_objects:
+                    if (self.isHandleTypeDispatchable(paramtype) or self.isHandleTypeNonDispatchable(paramtype)) and paramtype != 'VkPhysicalDevice':
                         if self.paramIsArray(param) and ('pPipelines' != paramname.text):
-                            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+                            # Add pointer dereference for array counts that are pointer values
+                            dereference = ''
+                            for candidate in params:
+                                if param.attrib.get('len') == candidate.find('name').text:
+                                    if self.paramIsPointer(candidate):
+                                        dereference = '*'
+                            param_len = str(param.attrib.get('len')).replace("::", "->")
+                            paramdecl += '    for (uint32_t index = 0; index < ' + dereference + param_len + '; index++) {\n'
                             paramdecl += '        ' + functionprefix + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
                             paramdecl += '    }\n'
                         elif not self.paramIsPointer(param):
@@ -281,8 +272,8 @@ class ThreadOutputGenerator(OutputGenerator):
         # Finish C++ namespace and multiple inclusion protection
         self.newline()
         # record intercepted procedures
-        write('// intercepts', file=self.outFile)
-        write('struct { const char* name; PFN_vkVoidFunction pFunc;} procmap[] = {', file=self.outFile)
+        write('// Map of all APIs to be intercepted by this layer', file=self.outFile)
+        write('static const std::unordered_map<std::string, void*> name_to_funcptr_map = {', file=self.outFile)
         write('\n'.join(self.intercepts), file=self.outFile)
         write('};\n', file=self.outFile)
         self.newline()
@@ -374,13 +365,6 @@ class ThreadOutputGenerator(OutputGenerator):
     # Command generation
     def genCmd(self, cmdinfo, name):
         # Commands shadowed by interface functions and are not implemented
-        interface_functions = [
-            'vkEnumerateInstanceLayerProperties',
-            'vkEnumerateInstanceExtensionProperties',
-            'vkEnumerateDeviceLayerProperties',
-        ]
-        if name in interface_functions:
-            return
         special_functions = [
             'vkGetDeviceProcAddr',
             'vkGetInstanceProcAddr',
@@ -392,21 +376,21 @@ class ThreadOutputGenerator(OutputGenerator):
             'vkFreeCommandBuffers',
             'vkCreateDebugReportCallbackEXT',
             'vkDestroyDebugReportCallbackEXT',
+            'vkAllocateDescriptorSets',
+            'vkGetSwapchainImagesKHR',
+            'vkEnumerateInstanceLayerProperties',
+            'vkEnumerateInstanceExtensionProperties',
+            'vkEnumerateDeviceLayerProperties',
+            'vkEnumerateDeviceExtensionProperties',
         ]
         if name in special_functions:
             decls = self.makeCDecls(cmdinfo.elem)
             self.appendSection('command', '')
             self.appendSection('command', '// declare only')
             self.appendSection('command', decls[0])
-            self.intercepts += [ '    {"%s", reinterpret_cast<PFN_vkVoidFunction>(%s)},' % (name,name[2:]) ]
+            self.intercepts += [ '    {"%s", (void*)%s},' % (name,name[2:]) ]
             return
-        if ("KHR" in name) or ("KHX" in name):
-            self.appendSection('command', '// TODO - not wrapping KHR function ' + name)
-            return
-        if ("NN" in name):
-            self.appendSection('command', '// TODO - not wrapping NN function ' + name)
-            return
-        if ("DebugMarker" in name) and ("EXT" in name):
+        if "QueuePresentKHR" in name or ("DebugMarker" in name and "EXT" in name):
             self.appendSection('command', '// TODO - not wrapping EXT function ' + name)
             return
         # Determine first if this function needs to be intercepted
@@ -417,7 +401,7 @@ class ThreadOutputGenerator(OutputGenerator):
         # record that the function will be intercepted
         if (self.featureExtraProtect != None):
             self.intercepts += [ '#ifdef %s' % self.featureExtraProtect ]
-        self.intercepts += [ '    {"%s", reinterpret_cast<PFN_vkVoidFunction>(%s)},' % (name,name[2:]) ]
+        self.intercepts += [ '    {"%s", (void*)%s},' % (name,name[2:]) ]
         if (self.featureExtraProtect != None):
             self.intercepts += [ '#endif' ]
 
@@ -432,7 +416,7 @@ class ThreadOutputGenerator(OutputGenerator):
         dispatchable_type = cmdinfo.elem.find('param/type').text
         dispatchable_name = cmdinfo.elem.find('param/name').text
         self.appendSection('command', '    dispatch_key key = get_dispatch_key('+dispatchable_name+');')
-        self.appendSection('command', '    layer_data *my_data = get_my_data_ptr(key, layer_data_map);')
+        self.appendSection('command', '    layer_data *my_data = GetLayerDataPtr(key, layer_data_map);')
         if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
             self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = my_data->instance_dispatch_table;')
         else:

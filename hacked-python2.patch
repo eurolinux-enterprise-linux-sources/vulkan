@@ -1,6 +1,6 @@
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/CMakeLists.txt.hackedpy Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/CMakeLists.txt
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/CMakeLists.txt.hackedpy	2017-02-21 12:49:19.461906550 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/CMakeLists.txt	2017-02-21 12:49:27.379949182 +1000
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt
+--- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt.da	2017-09-21 02:31:10.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt	2017-10-04 08:46:02.569350449 +1000
 @@ -13,7 +13,6 @@ set(MAJOR "1")
  string(TOLOWER ${API_NAME} API_LOWERCASE)
  
@@ -8,13 +8,37 @@ diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/CMakeLists.txt.hackedpy V
 -find_package(PythonInterp 3 REQUIRED)
  
  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-     include(FindPkgConfig)
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/scripts/lvl_genvk.py.hackedpy Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/scripts/lvl_genvk.py
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/scripts/lvl_genvk.py.hackedpy	2017-02-21 13:15:37.565419937 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.39.1/scripts/lvl_genvk.py	2017-02-21 13:15:48.423478704 +1000
+     set(FALLBACK_CONFIG_DIRS "/etc/xdg" CACHE STRING
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py.da	2017-09-21 02:31:10.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py	2017-10-04 08:46:02.569350449 +1000
 @@ -1,4 +1,4 @@
 -#!/usr/bin/python3
 +#!/usr/bin/python
  #
  # Copyright (c) 2013-2017 The Khronos Group Inc.
- # Copyright (c) 2015-2017 LunarG, Inc.
+ #
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py.da	2017-10-04 12:25:30.838968488 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py	2017-10-04 12:25:39.967216211 +1000
+@@ -242,7 +242,7 @@ class ObjectTrackerOutputGenerator(Outpu
+             ]
+         for vuid_filename in vuid_filename_locations:
+             if os.path.isfile(vuid_filename):
+-                self.vuid_file = open(vuid_filename, "r", encoding="utf8")
++                self.vuid_file = open(vuid_filename, "r")
+                 break
+         if self.vuid_file == None:
+             print("Error: Could not find vk_validation_error_messages.h")
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py.da	2017-10-04 12:25:34.090056715 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py	2017-10-04 12:25:46.741400047 +1000
+@@ -197,7 +197,7 @@ class ParameterValidationOutputGenerator
+             ]
+         for vuid_filename in vuid_filename_locations:
+             if os.path.isfile(vuid_filename):
+-                self.vuid_file = open(vuid_filename, "r", encoding="utf8")
++                self.vuid_file = open(vuid_filename, "r")
+                 break
+         if self.vuid_file == None:
+             print("Error: Could not find vk_validation_error_messages.h")

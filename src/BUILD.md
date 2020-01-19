@@ -9,7 +9,7 @@ and install it.
 
 If you intend to contribute, the preferred work flow is for you to develop your contribution
 in a fork of this repo in your GitHub account and then submit a pull request.
-Please see the [CONTRIBUTING](CONTRIBUTING.md) file in this respository for more details.
+Please see the [CONTRIBUTING](CONTRIBUTING.md) file in this repository for more details.
 
 ## Git the Bits
 
@@ -28,7 +28,7 @@ It should be straightforward to use it on other Linux distros.
 
 These packages are needed to build this repository:
 ```
-sudo apt-get install git cmake build-essential bison libx11-dev libxcb1-dev libxkbcommon-dev libmirclient-dev libwayland-dev libxrandr-dev
+sudo apt-get install git cmake build-essential bison libx11-xcb-dev libxkbcommon-dev libmirclient-dev libwayland-dev libxrandr-dev
 ```
 
 Example debug build (Note that the update\_external\_sources script used below builds external tools into predefined locations. See **Loader and Validation Layer Dependencies** for more information and other options):
@@ -142,6 +142,7 @@ This list may vary depending on your distro and which windowing systems you are 
 Set up your environment for building 32-bit targets:
 
 ```
+export ASFLAGS=--32
 export CFLAGS=-m32
 export CXXFLAGS=-m32
 export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu
@@ -193,7 +194,7 @@ Windows 7+ with additional required software packages:
   - Need python3.3 or later to get the Windows py.exe launcher that is used to get python3 rather than python2 if both are installed on Windows
   - 32 bit python works
 - [Git](http://git-scm.com/download/win).
-  - Note: If you use Cygwin, you can normally use Cygwin's "git.exe".  However, in order to use the "update\_external\_sources.bat" script, you must have this version.
+  - Note: If you use Cygwin, you can normally use Cygwin's "git.exe", and "update\_external\_sources.sh --no-build" does support Cygwin's git.  However, in order to use the "update\_external\_sources.bat" script, you must have this version.
   - Tell the installer to allow it to be used for "Developer Prompt" as well as "Git Bash".
   - Tell the installer to treat line endings "as is" (i.e. both DOS and Unix-style line endings).
   - Install each a 32-bit and a 64-bit version, as the 64-bit installer does not install the 32-bit libraries and tools.
@@ -206,12 +207,12 @@ Windows 7+ with additional required software packages:
 
 Before building on Windows, you may want to modify the customize section in loader/loader.rc to so as to
 set the version numbers and build description for your build. Doing so will set the information displayed
-for the Properites->Details tab of the loader vulkan-1.dll file that is built.
+for the Properties->Details tab of the loader vulkan-1.dll file that is built.
 
 Build all Windows targets after installing required software and cloning the Loader and Validation Layer repo as described above by completing the following steps in a "Developer Command Prompt for VS2013" window (Note that the update\_external\_sources script used below builds external tools into predefined locations. See **Loader and Validation Layer Dependencies** for more information and other options):
 ```
 cd Vulkan-LoaderAndValidationLayers  # cd to the root of the cloned git repository
-update_external_sources.bat --all
+update_external_sources.bat
 build_windows_targets.bat
 ```
 
@@ -224,31 +225,57 @@ This is described in a `LoaderAndLayerInterface` document in the `loader` folder
 This specification describes both how ICDs and layers should be properly
 packaged, and how developers can point to ICDs and layers within their builds.
 
+### Using Cygwin Git
+
+If you are using Cygwin git instead of win32-native git, you can use the *sh* script to sync using Cygwin's git (but not also build), then use the *bat* script to build (but not also sync).
+
+In a cygwin shell do this:
+```
+./update_external_sources.sh --no-build
+```
+
+Then in a Visual Studio Developer Command Prompt shell do this:
+```
+update_external_sources.bat --no-sync
+```
+
 ## Android Build
-Install the required tools for Linux and Windows covered above, then add the
-following.
+Install the required tools for Linux and Windows covered above, then add the following.
 ### Android Studio
-- Install [Android Studio 2.1](http://tools.android.com/download/studio/canary), latest Preview (tested with 4):
+- Install [Android Studio 2.3](https://developer.android.com/studio/index.html) or later.
 - From the "Welcome to Android Studio" splash screen, add the following components using Configure > SDK Manager:
-  - SDK Platforms > Android N Preview
+  - SDK Platforms > Android 6.0 and newer
+  - SDK Tools > Android SDK Build-Tools
+  - SDK Tools > Android SDK Platform-Tools
+  - SDK Tools > Android SDK Tools
   - SDK Tools > Android NDK
 
-#### Add NDK to path
+#### Add Android specifics to environment
 
 On Linux:
 ```
-export PATH=$HOME/Android/sdk/ndk-bundle:$PATH
+export ANDROID_SDK_HOME=$HOME/Android/sdk
+export ANDROID_NDK_HOME=$HOME/Android/sdk/ndk-bundle
+export PATH=$ANDROID_SDK_HOME:$PATH
+export PATH=$ANDROID_NDK_HOME:$PATH
+export PATH=$ANDROID_SDK_HOME/build-tools/23.0.3:$PATH
 ```
 On Windows:
 ```
+set ANDROID_SDK_HOME=%LOCALAPPDATA%\Android\sdk
+set ANDROID_NDK_HOME=%LOCALAPPDATA%\Android\sdk\ndk-bundle
 set PATH=%LOCALAPPDATA%\Android\sdk\ndk-bundle;%PATH%
 ```
 On OSX:
 ```
-export PATH=$HOME/Library/Android/sdk/ndk-bundle:$PATH
+export ANDROID_SDK_HOME=$HOME/Library/Android/sdk
+export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk-bundle
+export PATH=$ANDROID_NDK_PATH:$PATH
+export PATH=$ANDROID_SDK_HOME/build-tools/23.0.3:$PATH
 ```
+Note: If jarsigner is missing from your platform, you can find it in the Android Studio install.
 ### Additional OSX System Requirements
-Tested on OSX version 10.11.4
+Tested on OSX version 10.12.4
 
  Setup Homebrew and components
 - Follow instructions on [brew.sh](http://brew.sh) to get homebrew installed.
@@ -264,7 +291,18 @@ export PATH=/usr/local/bin:$PATH
 brew install cmake python python3 git
 ```
 ### Build steps for Android
-Use the following to ensure the Android build works.
+Use the following script to build everything in the repo for Android, including validation layers, tests, demos, and APK packaging:
+```
+cd build-android
+./build_all.sh
+```
+Resulting validation layer binaries will be in build-android/libs.
+Test and demo APKs can be installed on production devices with:
+```
+./install_all.sh -s <serial number>
+```
+Note that there are no equivalent scripts on Windows yet, that work needs to be completed.
+The following per platform commands can be used for layer only builds:
 #### Linux and OSX
 Follow the setup steps for Linux or OSX above, then from your terminal:
 ```
@@ -281,26 +319,46 @@ update_external_sources_android.bat
 android-generate.bat
 ndk-build
 ```
-#### Android demos
-Use the following steps to build, install, and run Cube and Tri for Android:
+#### Android tests
+Use the following steps to build, install, and run the layer validation tests for Android:
 ```
-cd demos/android
-android update project -s -p . -t "android-23"
-ndk-build
-ant -buildfile cube debug
-adb install ./cube/bin/NativeActivity-debug.apk
+cd build-android
+./build_all.sh
+adb install -r bin/VulkanLayerValidationTests.apk
+adb shell am start com.example.VulkanLayerValidationTests/android.app.NativeActivity
+```
+Alternatively, you can use the test_APK script to install and run the layer validation tests:
+```
+test_APK.sh -s <serial number> -p <plaform name> -f <gtest_filter>
+```
+#### Android demos
+Use the following steps to build, install, and run Cube and Smoke for Android:
+```
+cd build-android
+./build_all.sh
+adb install -r ../demos/android/cube/bin/cube.apk
 adb shell am start com.example.Cube/android.app.NativeActivity
 ```
 To build, install, and run Cube with validation layers, first build layers using steps above, then run:
 ```
-cd demos/android
-android update project -s -p . -t "android-23"
-ndk-build -j
-ant -buildfile cube-with-layers debug
-adb install ./cube-with-layers/bin/NativeActivity-debug.apk
+cd build-android
+./build_all.sh
+adb install -r ../demos/android/cube-with-layers/bin/cube-with-layers.apk
+adb shell am start com.example.CubeWithLayers/android.app.NativeActivity
 adb shell am start -a android.intent.action.MAIN -c android-intent.category.LAUNCH -n com.example.CubeWithLayers/android.app.NativeActivity --es args "--validate"
 ```
+vkjson_info for Android is built as an executable for devices with root access.
 
+To use, simply push it to the device and run it:
+```
+./build_all.sh
+adb push obj/local/<abi>/vkjson_info /data/tmp/
+adb shell /data/tmp/vkjson_info
+```
+The resulting json file will be found in:
+```
+/sdcard/Android/<device_name>.json
+```
 To build, install, and run the Smoke demo for Android, run the following, and any
 prompts that come back from the script:
 ```

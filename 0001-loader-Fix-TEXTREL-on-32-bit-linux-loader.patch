@@ -1,0 +1,26 @@
+From 560f9cdf78d3d03dbf97be638becd1a7df5fa154 Mon Sep 17 00:00:00 2001
+From: Lenny Komow <lenny@lunarg.com>
+Date: Fri, 6 Oct 2017 11:13:15 -0600
+Subject: [PATCH] loader: Fix TEXTREL on 32-bit linux loader
+
+Change-Id: I5fc568ce0ad17c280c484f37b2797eead08169b3
+---
+ loader/unknown_ext_chain_gas.asm | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/loader/unknown_ext_chain_gas.asm b/loader/unknown_ext_chain_gas.asm
+index 798760b..aca92ea 100644
+--- a/loader/unknown_ext_chain_gas.asm
++++ b/loader/unknown_ext_chain_gas.asm
+@@ -89,7 +89,7 @@ vkPhysDevExtTermin\num:
+ terminError\num:
+     mov     eax, [eax + INSTANCE_OFFSET_ICD_TERM]                               # Load the loader_instance into eax
+     push    [eax + (HASH_OFFSET_INSTANCE + (HASH_SIZE * \num) + FUNC_NAME_OFFSET_HASH)] # Push the func name (fifth arg)
+-    push    offset termin_error_string                                          # Push the error string (fourth arg)
++    push    offset termin_error_string@GOT                                      # Push the error string (fourth arg)
+     push    0                                                                   # Push zero (third arg)
+     push    VK_DEBUG_REPORT_ERROR_BIT_EXT                                       # Push the error logging bit (second arg)
+     push    eax                                                                 # Push the loader_instance (first arg)
+-- 
+2.9.5
+

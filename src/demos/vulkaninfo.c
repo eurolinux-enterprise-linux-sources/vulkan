@@ -19,7 +19,17 @@
  * Author: David Pinedo <david@lunarg.com>
  * Author: Mark Lobodzinski <mark@lunarg.com>
  * Author: Rene Lindsay <rene@lunarg.com>
+ * Author: Jeremy Kniager <jeremyk@lunarg.com>
  */
+
+#ifdef __GNUC__
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#else
+#define strndup(p, n) strdup(p)
+#endif
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -30,7 +40,7 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
-#endif // _WIN32
+#endif  // _WIN32
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_XCB_KHR)
 #include <X11/Xutil.h>
@@ -42,13 +52,12 @@
 
 #include <vulkan/vulkan.h>
 
-#define ERR(err)                                                               \
-    printf("%s:%d: failed with %s\n", __FILE__, __LINE__,                      \
-           VkResultString(err));
+#define ERR(err) printf("%s:%d: failed with %s\n", __FILE__, __LINE__, VkResultString(err));
 
 #ifdef _WIN32
 
 #define snprintf _snprintf
+#define strdup   _strdup
 
 // Returns nonzero if the console is used only for this process. Will return
 // zero if another process (such as cmd.exe) is also attached.
@@ -58,21 +67,20 @@ static int ConsoleIsExclusive(void) {
     return num_pids <= 1;
 }
 
-#define WAIT_FOR_CONSOLE_DESTROY                                               \
-    do {                                                                       \
-        if (ConsoleIsExclusive())                                              \
-            Sleep(INFINITE);                                                   \
+#define WAIT_FOR_CONSOLE_DESTROY                   \
+    do {                                           \
+        if (ConsoleIsExclusive()) Sleep(INFINITE); \
     } while (0)
 #else
 #define WAIT_FOR_CONSOLE_DESTROY
 #endif
 
-#define ERR_EXIT(err)                                                          \
-    do {                                                                       \
-        ERR(err);                                                              \
-        fflush(stdout);                                                        \
-        WAIT_FOR_CONSOLE_DESTROY;                                              \
-        exit(-1);                                                              \
+#define ERR_EXIT(err)             \
+    do {                          \
+        ERR(err);                 \
+        fflush(stdout);           \
+        WAIT_FOR_CONSOLE_DESTROY; \
+        exit(-1);                 \
     } while (0)
 
 #if defined(NDEBUG) && defined(__GNUC__)
@@ -86,6 +94,11 @@ static int ConsoleIsExclusive(void) {
 #define MAX_QUEUE_TYPES 5
 #define APP_SHORT_NAME "vulkaninfo"
 
+struct VkStructureHeader {
+    VkStructureType sType;
+    void *pNext;
+};
+
 struct AppGpu;
 
 struct AppDev {
@@ -94,6 +107,7 @@ struct AppDev {
     VkDevice obj;
 
     VkFormatProperties format_props[VK_FORMAT_RANGE_SIZE];
+    VkFormatProperties2KHR format_props2[VK_FORMAT_RANGE_SIZE];
 };
 
 struct LayerExtensionList {
@@ -107,23 +121,34 @@ struct AppInstance {
     uint32_t global_layer_count;
     struct LayerExtensionList *global_layers;
     uint32_t global_extension_count;
-    VkExtensionProperties *global_extensions; // Instance Extensions
+    VkExtensionProperties *global_extensions;  // Instance Extensions
 
-    PFN_vkGetPhysicalDeviceSurfaceSupportKHR
-        vkGetPhysicalDeviceSurfaceSupportKHR;
-    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
-    PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
-        vkGetPhysicalDeviceSurfaceFormatsKHR;
-    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR
-        vkGetPhysicalDeviceSurfacePresentModesKHR;
+    const char **inst_extensions;
+    uint32_t inst_extensions_count;
+
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+    PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
+    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
+    PFN_vkGetPhysicalDeviceProperties2KHR vkGetPhysicalDeviceProperties2KHR;
+    PFN_vkGetPhysicalDeviceFormatProperties2KHR vkGetPhysicalDeviceFormatProperties2KHR;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties2KHR vkGetPhysicalDeviceQueueFamilyProperties2KHR;
+    PFN_vkGetPhysicalDeviceFeatures2KHR vkGetPhysicalDeviceFeatures2KHR;
+    PFN_vkGetPhysicalDeviceMemoryProperties2KHR vkGetPhysicalDeviceMemoryProperties2KHR;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR vkGetPhysicalDeviceSurfaceCapabilities2KHR;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2EXT vkGetPhysicalDeviceSurfaceCapabilities2EXT;
+
+    VkSurfaceCapabilitiesKHR surface_capabilities;
+    VkSurfaceCapabilities2KHR surface_capabilities2;
+    VkSharedPresentSurfaceCapabilitiesKHR shared_surface_capabilities;
+    VkSurfaceCapabilities2EXT surface_capabilities2_ext;
 
     VkSurfaceKHR surface;
     int width, height;
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-    HINSTANCE h_instance; // Windows Instance
-    HWND h_wnd;           // window handle
+    HINSTANCE h_instance;  // Windows Instance
+    HWND h_wnd;            // window handle
 #elif VK_USE_PLATFORM_XCB_KHR
     xcb_connection_t *xcb_connection;
     xcb_screen_t *xcb_screen;
@@ -131,7 +156,7 @@ struct AppInstance {
 #elif VK_USE_PLATFORM_XLIB_KHR
     Display *xlib_display;
     Window xlib_window;
-#elif VK_USE_PLATFORM_ANDROID_KHR // TODO
+#elif VK_USE_PLATFORM_ANDROID_KHR  // TODO
     ANativeWindow *window;
 #endif
 };
@@ -141,13 +166,20 @@ struct AppGpu {
     VkPhysicalDevice obj;
 
     VkPhysicalDeviceProperties props;
+    VkPhysicalDeviceProperties2KHR props2;
 
     uint32_t queue_count;
     VkQueueFamilyProperties *queue_props;
+    VkQueueFamilyProperties2KHR *queue_props2;
     VkDeviceQueueCreateInfo *queue_reqs;
 
+    struct AppInstance *inst;
+
     VkPhysicalDeviceMemoryProperties memory_props;
+    VkPhysicalDeviceMemoryProperties2KHR memory_props2;
+
     VkPhysicalDeviceFeatures features;
+    VkPhysicalDeviceFeatures2KHR features2;
     VkPhysicalDevice limits;
 
     uint32_t device_extension_count;
@@ -156,26 +188,21 @@ struct AppGpu {
     struct AppDev dev;
 };
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL
-DbgCallback(VkFlags msgFlags, VkDebugReportObjectTypeEXT objType,
-             uint64_t srcObject, size_t location, int32_t msgCode,
-             const char *pLayerPrefix, const char *pMsg, void *pUserData) {
+static VKAPI_ATTR VkBool32 VKAPI_CALL DbgCallback(VkFlags msgFlags, VkDebugReportObjectTypeEXT objType, uint64_t srcObject,
+                                                  size_t location, int32_t msgCode, const char *pLayerPrefix, const char *pMsg,
+                                                  void *pUserData) {
     char *message = (char *)malloc(strlen(pMsg) + 100);
 
     assert(message);
 
     if (msgFlags & VK_DEBUG_REPORT_ERROR_BIT_EXT) {
-        sprintf(message, "ERROR: [%s] Code %d : %s", pLayerPrefix, msgCode,
-                pMsg);
+        sprintf(message, "ERROR: [%s] Code %d : %s", pLayerPrefix, msgCode, pMsg);
     } else if (msgFlags & VK_DEBUG_REPORT_WARNING_BIT_EXT) {
-        sprintf(message, "WARNING: [%s] Code %d : %s", pLayerPrefix, msgCode,
-                pMsg);
+        sprintf(message, "WARNING: [%s] Code %d : %s", pLayerPrefix, msgCode, pMsg);
     } else if (msgFlags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT) {
-        sprintf(message, "INFO: [%s] Code %d : %s", pLayerPrefix, msgCode,
-                pMsg);
+        sprintf(message, "INFO: [%s] Code %d : %s", pLayerPrefix, msgCode, pMsg);
     } else if (msgFlags & VK_DEBUG_REPORT_DEBUG_BIT_EXT) {
-        sprintf(message, "DEBUG: [%s] Code %d : %s", pLayerPrefix, msgCode,
-                pMsg);
+        sprintf(message, "DEBUG: [%s] Code %d : %s", pLayerPrefix, msgCode, pMsg);
     }
 
     printf("%s\n", message);
@@ -194,8 +221,8 @@ DbgCallback(VkFlags msgFlags, VkDebugReportObjectTypeEXT objType,
 
 static const char *VkResultString(VkResult err) {
     switch (err) {
-#define STR(r)                                                                 \
-    case r:                                                                    \
+#define STR(r) \
+    case r:    \
         return #r
         STR(VK_SUCCESS);
         STR(VK_NOT_READY);
@@ -211,30 +238,31 @@ static const char *VkResultString(VkResult err) {
         STR(VK_ERROR_MEMORY_MAP_FAILED);
         STR(VK_ERROR_INCOMPATIBLE_DRIVER);
 #undef STR
-    default:
-        return "UNKNOWN_RESULT";
+        default:
+            return "UNKNOWN_RESULT";
     }
 }
 
 static const char *VkPhysicalDeviceTypeString(VkPhysicalDeviceType type) {
     switch (type) {
-#define STR(r)                                                                 \
-    case VK_PHYSICAL_DEVICE_TYPE_##r:                                          \
+#define STR(r)                        \
+    case VK_PHYSICAL_DEVICE_TYPE_##r: \
         return #r
         STR(OTHER);
         STR(INTEGRATED_GPU);
         STR(DISCRETE_GPU);
         STR(VIRTUAL_GPU);
+        STR(CPU);
 #undef STR
-    default:
-        return "UNKNOWN_DEVICE";
+        default:
+            return "UNKNOWN_DEVICE";
     }
 }
 
 static const char *VkFormatString(VkFormat fmt) {
     switch (fmt) {
-#define STR(r)                                                                 \
-    case VK_FORMAT_##r:                                                        \
+#define STR(r)          \
+    case VK_FORMAT_##r: \
         return #r
         STR(UNDEFINED);
         STR(R4G4_UNORM_PACK8);
@@ -417,66 +445,71 @@ static const char *VkFormatString(VkFormat fmt) {
         STR(ASTC_12x12_UNORM_BLOCK);
         STR(ASTC_12x12_SRGB_BLOCK);
 #undef STR
-    default:
-        return "UNKNOWN_FORMAT";
+        default:
+            return "UNKNOWN_FORMAT";
     }
 }
-#if defined(VK_USE_PLATFORM_XCB_KHR)     || \
-    defined(VK_USE_PLATFORM_XLIB_KHR)    || \
-    defined(VK_USE_PLATFORM_WIN32_KHR)
+#if defined(VK_USE_PLATFORM_XCB_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_WIN32_KHR)
 static const char *VkPresentModeString(VkPresentModeKHR mode) {
     switch (mode) {
-#define STR(r)                                                                 \
-    case VK_PRESENT_MODE_##r:                                                  \
+#define STR(r)                \
+    case VK_PRESENT_MODE_##r: \
         return #r
         STR(IMMEDIATE_KHR);
         STR(MAILBOX_KHR);
         STR(FIFO_KHR);
         STR(FIFO_RELAXED_KHR);
 #undef STR
-    default:
-        return "UNKNOWN_FORMAT";
+        default:
+            return "UNKNOWN_FORMAT";
     }
 }
 #endif
 
+static bool CheckExtensionEnabled(const char *extension_to_check, const char **extension_list, uint32_t extension_count) {
+    for (uint32_t i = 0; i < extension_count; i++) {
+        if (!strcmp(extension_to_check, extension_list[i])) return true;
+    }
+    return false;
+}
+
 static void AppDevInitFormats(struct AppDev *dev) {
     VkFormat f;
-
     for (f = 0; f < VK_FORMAT_RANGE_SIZE; f++) {
         const VkFormat fmt = f;
+        vkGetPhysicalDeviceFormatProperties(dev->gpu->obj, fmt, &dev->format_props[f]);
 
-        vkGetPhysicalDeviceFormatProperties(dev->gpu->obj, fmt,
-                                            &dev->format_props[f]);
+        if (CheckExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, dev->gpu->inst->inst_extensions,
+                                  dev->gpu->inst->inst_extensions_count)) {
+            dev->format_props2[f].sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2_KHR;
+            dev->format_props2[f].pNext = NULL;
+            dev->gpu->inst->vkGetPhysicalDeviceFormatProperties2KHR(dev->gpu->obj, fmt, &dev->format_props2[f]);
+        }
     }
 }
 
-static void ExtractVersion(uint32_t version, uint32_t *major, uint32_t *minor,
-                            uint32_t *patch) {
+static void ExtractVersion(uint32_t version, uint32_t *major, uint32_t *minor, uint32_t *patch) {
     *major = version >> 22;
     *minor = (version >> 12) & 0x3ff;
     *patch = version & 0xfff;
 }
 
-static void AppGetPhysicalDeviceLayerExtensions(
-    struct AppGpu *gpu, char *layer_name, uint32_t *extension_count,
-    VkExtensionProperties **extension_properties) {
+static void AppGetPhysicalDeviceLayerExtensions(struct AppGpu *gpu, char *layer_name, uint32_t *extension_count,
+                                                VkExtensionProperties **extension_properties) {
     VkResult err;
     uint32_t ext_count = 0;
     VkExtensionProperties *ext_ptr = NULL;
 
     /* repeat get until VK_INCOMPLETE goes away */
     do {
-        err = vkEnumerateDeviceExtensionProperties(gpu->obj, layer_name,
-                                                   &ext_count, NULL);
+        err = vkEnumerateDeviceExtensionProperties(gpu->obj, layer_name, &ext_count, NULL);
         assert(!err);
 
         if (ext_ptr) {
             free(ext_ptr);
         }
         ext_ptr = malloc(ext_count * sizeof(VkExtensionProperties));
-        err = vkEnumerateDeviceExtensionProperties(gpu->obj, layer_name,
-                                                   &ext_count, ext_ptr);
+        err = vkEnumerateDeviceExtensionProperties(gpu->obj, layer_name, &ext_count, ext_ptr);
     } while (err == VK_INCOMPLETE);
     assert(!err);
 
@@ -499,8 +532,7 @@ static void AppDevInit(struct AppDev *dev, struct AppGpu *gpu) {
     VkResult U_ASSERT_ONLY err;
 
     // Device extensions
-    AppGetPhysicalDeviceLayerExtensions(
-        gpu, NULL, &gpu->device_extension_count, &gpu->device_extensions);
+    AppGetPhysicalDeviceLayerExtensions(gpu, NULL, &gpu->device_extension_count, &gpu->device_extensions);
 
     fflush(stdout);
 
@@ -514,8 +546,7 @@ static void AppDevInit(struct AppDev *dev, struct AppGpu *gpu) {
     info.ppEnabledExtensionNames = NULL;
     dev->gpu = gpu;
     err = vkCreateDevice(gpu->obj, &info, NULL, &dev->obj);
-    if (err)
-        ERR_EXIT(err);
+    if (err) ERR_EXIT(err);
 }
 
 static void AppDevDestroy(struct AppDev *dev) {
@@ -523,9 +554,7 @@ static void AppDevDestroy(struct AppDev *dev) {
     vkDestroyDevice(dev->obj, NULL);
 }
 
-static void
-AppGetGlobalLayerExtensions(char *layer_name, uint32_t *extension_count,
-                                VkExtensionProperties **extension_properties) {
+static void AppGetGlobalLayerExtensions(char *layer_name, uint32_t *extension_count, VkExtensionProperties **extension_properties) {
     VkResult err;
     uint32_t ext_count = 0;
     VkExtensionProperties *ext_ptr = NULL;
@@ -533,8 +562,7 @@ AppGetGlobalLayerExtensions(char *layer_name, uint32_t *extension_count,
     /* repeat get until VK_INCOMPLETE goes away */
     do {
         // gets the extension count if the last parameter is NULL
-        err = vkEnumerateInstanceExtensionProperties(layer_name, &ext_count,
-                                                     NULL);
+        err = vkEnumerateInstanceExtensionProperties(layer_name, &ext_count, NULL);
         assert(!err);
 
         if (ext_ptr) {
@@ -542,8 +570,7 @@ AppGetGlobalLayerExtensions(char *layer_name, uint32_t *extension_count,
         }
         ext_ptr = malloc(ext_count * sizeof(VkExtensionProperties));
         // gets the extension properties if the last parameter is not NULL
-        err = vkEnumerateInstanceExtensionProperties(layer_name, &ext_count,
-                                                     ext_ptr);
+        err = vkEnumerateInstanceExtensionProperties(layer_name, &ext_count, ext_ptr);
     } while (err == VK_INCOMPLETE);
     assert(!err);
     *extension_count = ext_count;
@@ -576,8 +603,7 @@ static void AppGetInstanceExtensions(struct AppInstance *inst) {
         global_layers = malloc(sizeof(struct LayerExtensionList) * count);
         assert(global_layers);
 
-        err =
-            vkEnumerateInstanceLayerProperties(&count, global_layer_properties);
+        err = vkEnumerateInstanceLayerProperties(&count, global_layer_properties);
     } while (err == VK_INCOMPLETE);
     assert(!err);
 
@@ -587,14 +613,11 @@ static void AppGetInstanceExtensions(struct AppInstance *inst) {
     for (uint32_t i = 0; i < inst->global_layer_count; i++) {
         VkLayerProperties *src_info = &global_layer_properties[i];
         struct LayerExtensionList *dst_info = &inst->global_layers[i];
-        memcpy(&dst_info->layer_properties, src_info,
-               sizeof(VkLayerProperties));
+        memcpy(&dst_info->layer_properties, src_info, sizeof(VkLayerProperties));
 
         // Save away layer extension info for report
         // Gets layer extensions, if first parameter is not NULL
-        AppGetGlobalLayerExtensions(src_info->layerName,
-                                        &dst_info->extension_count,
-                                        &dst_info->extension_properties);
+        AppGetGlobalLayerExtensions(src_info->layerName, &dst_info->extension_count, &dst_info->extension_properties);
     }
     free(global_layer_properties);
 
@@ -602,64 +625,45 @@ static void AppGetInstanceExtensions(struct AppInstance *inst) {
     inst->global_extension_count = 0;
     // Gets instance extensions, if no layer was specified in the first
     // paramteter
-    AppGetGlobalLayerExtensions(NULL, &inst->global_extension_count,
-                                    &inst->global_extensions);
+    AppGetGlobalLayerExtensions(NULL, &inst->global_extension_count, &inst->global_extensions);
 }
 
 static void AppCreateInstance(struct AppInstance *inst) {
     AppGetInstanceExtensions(inst);
 
 //---Build a list of extensions to load---
-#define MAX_EXTENSIONS 4
-    uint32_t i = 0;
-    uint32_t ext_count = 0;
-    const char *ext_names[MAX_EXTENSIONS]; // array of string pointers to
-                                           // extension names
-    for (i = 0; (i < inst->global_extension_count); i++) {
-        const char *found_name = inst->global_extensions[i].extensionName;
-        if (!strcmp(VK_KHR_SURFACE_EXTENSION_NAME, found_name)) {
-            ext_names[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
+
+    const char *info_instance_extensions[] = {VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+                                              VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME,
+                                              VK_KHR_SURFACE_EXTENSION_NAME,
+                                              VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+                                              VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME,
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+                                              VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+#elif VK_USE_PLATFORM_XCB_KHR
+                                              VK_KHR_XCB_SURFACE_EXTENSION_NAME
+#elif VK_USE_PLATFORM_XLIB_KHR
+                                              VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+#elif VK_USE_PLATFORM_WAYLAND_KHR
+                                              VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME
+#elif VK_USE_PLATFORM_ANDROID_KHR
+                                              VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
+#endif
+    };
+    uint32_t info_instance_extensions_count = ARRAY_SIZE(info_instance_extensions);
+    inst->inst_extensions = malloc(sizeof(char *) * ARRAY_SIZE(info_instance_extensions));
+    inst->inst_extensions_count = 0;
+
+    for (uint32_t k = 0; (k < info_instance_extensions_count); k++) {
+        for (uint32_t j = 0; (j < inst->global_extension_count); j++) {
+            const char *found_name = inst->global_extensions[j].extensionName;
+            if (!strcmp(info_instance_extensions[k], found_name)) {
+                inst->inst_extensions[inst->inst_extensions_count++] = info_instance_extensions[k];
+                break;
+            }
         }
     }
 
-#if defined(VK_USE_PLATFORM_XCB_KHR)     || \
-    defined(VK_USE_PLATFORM_XLIB_KHR)    || \
-    defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
-    defined(VK_USE_PLATFORM_WIN32_KHR)   || \
-    defined(VK_USE_PLATFORM_ANDROID_KHR)
-    if (ext_count)
-        for (i = 0; ((i < inst->global_extension_count) &&
-                     (ext_count < MAX_EXTENSIONS));
-             i++) {
-            const char *found_name = inst->global_extensions[i].extensionName;
-#ifdef VK_USE_PLATFORM_WIN32_KHR
-            if (!strcmp(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, found_name)) {
-                ext_names[ext_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
-            }
-#elif VK_USE_PLATFORM_XCB_KHR
-            if (!strcmp(VK_KHR_XCB_SURFACE_EXTENSION_NAME, found_name)) {
-                ext_names[ext_count++] = VK_KHR_XCB_SURFACE_EXTENSION_NAME;
-            }
-#elif VK_USE_PLATFORM_XLIB_KHR
-            if (!strcmp(VK_KHR_XLIB_SURFACE_EXTENSION_NAME, found_name)) {
-                ext_names[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
-            }
-#elif VK_USE_PLATFORM_WAYLAND_KHR
-            if (!strcmp(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME, found_name)) {
-                ext_names[ext_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
-            }
-#elif VK_USE_PLATFORM_ANDROID_KHR
-            if (!strcmp(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, found_name)) {
-                ext_names[ext_count++] = VK_KHR_ANDROID_SURFACE_EXTENSION_NAME;
-            }
-#endif
-        }
-#endif
-    // If we don't find the KHR_SURFACE extension and at least one other
-    // device-specific extension,
-    // then give up on reporting presentable surface formats."
-    if (ext_count < 2)
-        ext_count = 0;
     //----------------------------------------
 
     const VkApplicationInfo app_info = {
@@ -672,22 +676,18 @@ static void AppCreateInstance(struct AppInstance *inst) {
         .apiVersion = VK_API_VERSION_1_0,
     };
 
-    VkInstanceCreateInfo inst_info = {
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = NULL,
-        .pApplicationInfo = &app_info,
-        .enabledLayerCount = 0,
-        .ppEnabledLayerNames = NULL,
-        .enabledExtensionCount = ext_count,
-        .ppEnabledExtensionNames = ext_names,
-    };
+    VkInstanceCreateInfo inst_info = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                                      .pNext = NULL,
+                                      .pApplicationInfo = &app_info,
+                                      .enabledLayerCount = 0,
+                                      .ppEnabledLayerNames = NULL,
+                                      .enabledExtensionCount = inst->inst_extensions_count,
+                                      .ppEnabledExtensionNames = inst->inst_extensions};
 
     VkDebugReportCallbackCreateInfoEXT dbg_info;
     memset(&dbg_info, 0, sizeof(dbg_info));
     dbg_info.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
-    dbg_info.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT |
-                     VK_DEBUG_REPORT_WARNING_BIT_EXT |
-                     VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
+    dbg_info.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
     dbg_info.pfnCallback = DbgCallback;
     inst_info.pNext = &dbg_info;
 
@@ -700,60 +700,91 @@ static void AppCreateInstance(struct AppInstance *inst) {
         ERR_EXIT(err);
     }
 
-    if (ext_count > 0) {
-//--Load Extensions--
-#define GET_INSTANCE_PROC_ADDR(ENTRYPOINT)                                     \
-    {                                                                          \
-        inst->ENTRYPOINT =                                                     \
-            (void *)vkGetInstanceProcAddr(inst->instance, #ENTRYPOINT);        \
-    }
-        GET_INSTANCE_PROC_ADDR(vkGetPhysicalDeviceSurfaceSupportKHR)
-        GET_INSTANCE_PROC_ADDR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)
-        GET_INSTANCE_PROC_ADDR(vkGetPhysicalDeviceSurfaceFormatsKHR)
-        GET_INSTANCE_PROC_ADDR(vkGetPhysicalDeviceSurfacePresentModesKHR)
-#undef GET_INSTANCE_PROC_ADDR
-    }
+    inst->vkGetPhysicalDeviceSurfaceSupportKHR =
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkGetInstanceProcAddr(inst->instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    inst->vkGetPhysicalDeviceSurfaceCapabilitiesKHR = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    inst->vkGetPhysicalDeviceSurfaceFormatsKHR =
+        (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)vkGetInstanceProcAddr(inst->instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+    inst->vkGetPhysicalDeviceSurfacePresentModesKHR = (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+    inst->vkGetPhysicalDeviceProperties2KHR =
+        (PFN_vkGetPhysicalDeviceProperties2KHR)vkGetInstanceProcAddr(inst->instance, "vkGetPhysicalDeviceProperties2KHR");
+    inst->vkGetPhysicalDeviceFormatProperties2KHR = (PFN_vkGetPhysicalDeviceFormatProperties2KHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceFormatProperties2KHR");
+    inst->vkGetPhysicalDeviceQueueFamilyProperties2KHR = (PFN_vkGetPhysicalDeviceQueueFamilyProperties2KHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceQueueFamilyProperties2KHR");
+    inst->vkGetPhysicalDeviceFeatures2KHR =
+        (PFN_vkGetPhysicalDeviceFeatures2KHR)vkGetInstanceProcAddr(inst->instance, "vkGetPhysicalDeviceFeatures2KHR");
+    inst->vkGetPhysicalDeviceMemoryProperties2KHR = (PFN_vkGetPhysicalDeviceMemoryProperties2KHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceMemoryProperties2KHR");
+    inst->vkGetPhysicalDeviceSurfaceCapabilities2KHR = (PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
+    inst->vkGetPhysicalDeviceSurfaceCapabilities2EXT = (PFN_vkGetPhysicalDeviceSurfaceCapabilities2EXT)vkGetInstanceProcAddr(
+        inst->instance, "vkGetPhysicalDeviceSurfaceCapabilities2EXT");
 }
 
 //-----------------------------------------------------------
 
 static void AppDestroyInstance(struct AppInstance *inst) {
     free(inst->global_extensions);
+    for (uint32_t i = 0; i < inst->global_layer_count; i++) {
+        free(inst->global_layers[i].extension_properties);
+    }
+    free(inst->global_layers);
+    free((char**)inst->inst_extensions);
     vkDestroyInstance(inst->instance, NULL);
 }
 
-static void AppGpuInit(struct AppGpu *gpu, uint32_t id,
-                         VkPhysicalDevice obj) {
+static void AppGpuInit(struct AppGpu *gpu, struct AppInstance *inst, uint32_t id, VkPhysicalDevice obj) {
     uint32_t i;
 
     memset(gpu, 0, sizeof(*gpu));
 
     gpu->id = id;
     gpu->obj = obj;
+    gpu->inst = inst;
 
     vkGetPhysicalDeviceProperties(gpu->obj, &gpu->props);
+
+    if (CheckExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, gpu->inst->inst_extensions,
+                              gpu->inst->inst_extensions_count)) {
+        gpu->props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        gpu->props2.pNext = NULL;
+
+        inst->vkGetPhysicalDeviceProperties2KHR(gpu->obj, &gpu->props2);
+    }
 
     /* get queue count */
     vkGetPhysicalDeviceQueueFamilyProperties(gpu->obj, &gpu->queue_count, NULL);
 
     gpu->queue_props = malloc(sizeof(gpu->queue_props[0]) * gpu->queue_count);
 
-    if (!gpu->queue_props)
-        ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
-    vkGetPhysicalDeviceQueueFamilyProperties(gpu->obj, &gpu->queue_count,
-                                             gpu->queue_props);
+    if (!gpu->queue_props) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu->obj, &gpu->queue_count, gpu->queue_props);
+
+    if (CheckExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, gpu->inst->inst_extensions,
+                              gpu->inst->inst_extensions_count)) {
+        gpu->queue_props2 = malloc(sizeof(gpu->queue_props2[0]) * gpu->queue_count);
+
+        if (!gpu->queue_props2) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+
+        for (i = 0; i < gpu->queue_count; i++) {
+            gpu->queue_props2[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2_KHR;
+            gpu->queue_props2[i].pNext = NULL;
+        }
+
+        inst->vkGetPhysicalDeviceQueueFamilyProperties2KHR(gpu->obj, &gpu->queue_count, gpu->queue_props2);
+    }
 
     /* set up queue requests */
     gpu->queue_reqs = malloc(sizeof(*gpu->queue_reqs) * gpu->queue_count);
-    if (!gpu->queue_reqs)
-        ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+    if (!gpu->queue_reqs) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
     for (i = 0; i < gpu->queue_count; i++) {
-        float *queue_priorities =
-            malloc(gpu->queue_props[i].queueCount * sizeof(float));
-        if (!queue_priorities)
-            ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
-        memset(queue_priorities, 0,
-               gpu->queue_props[i].queueCount * sizeof(float));
+        float *queue_priorities = malloc(gpu->queue_props[i].queueCount * sizeof(float));
+        if (!queue_priorities) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+        memset(queue_priorities, 0, gpu->queue_props[i].queueCount * sizeof(float));
+
         gpu->queue_reqs[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         gpu->queue_reqs[i].pNext = NULL;
         gpu->queue_reqs[i].flags = 0;
@@ -765,6 +796,19 @@ static void AppGpuInit(struct AppGpu *gpu, uint32_t id,
     vkGetPhysicalDeviceMemoryProperties(gpu->obj, &gpu->memory_props);
 
     vkGetPhysicalDeviceFeatures(gpu->obj, &gpu->features);
+
+    if (CheckExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, gpu->inst->inst_extensions,
+                              gpu->inst->inst_extensions_count)) {
+        gpu->memory_props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2_KHR;
+        gpu->memory_props2.pNext = NULL;
+
+        inst->vkGetPhysicalDeviceMemoryProperties2KHR(gpu->obj, &gpu->memory_props2);
+
+        gpu->features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR;
+        gpu->features2.pNext = NULL;
+
+        inst->vkGetPhysicalDeviceFeatures2KHR(gpu->obj, &gpu->features2);
+    }
 
     AppDevInit(&gpu->dev, gpu);
     AppDevInitFormats(&gpu->dev);
@@ -778,7 +822,12 @@ static void AppGpuDestroy(struct AppGpu *gpu) {
         free((void *)gpu->queue_reqs[i].pQueuePriorities);
     }
     free(gpu->queue_reqs);
+
     free(gpu->queue_props);
+    if (CheckExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, gpu->inst->inst_extensions,
+                              gpu->inst->inst_extensions_count)) {
+        free(gpu->queue_props2);
+    }
 }
 
 // clang-format off
@@ -880,6 +929,13 @@ static void AppCreateXcbWindow(struct AppInstance *inst) {
     inst->xcb_connection = xcb_connect(NULL, &scr);
     if (inst->xcb_connection == NULL) {
         printf("XCB failed to connect to the X server.\nExiting ...\n");
+        fflush(stdout);
+        exit(1);
+    }
+
+    int conn_error = xcb_connection_has_error(inst->xcb_connection);
+    if (conn_error) {
+        printf("XCB failed to connect to the X server due to error:%d.\nExiting ...\n", conn_error);
         fflush(stdout);
         exit(1);
     }
@@ -988,6 +1044,8 @@ static int AppDumpSurfaceFormats(struct AppInstance *inst, struct AppGpu *gpu){
         printf("\t%s\n", VkFormatString(surf_formats[i].format));
     }
     fflush(stdout);
+
+    free(surf_formats);
     return format_count;
 }
 
@@ -1010,8 +1068,128 @@ static int AppDumpSurfacePresentModes(struct AppInstance *inst, struct AppGpu *g
     }
     printf("\n");
     fflush(stdout);
+
+    free(surf_present_modes);
     return present_mode_count;
 }
+
+static void AppDumpSurfaceCapabilities(struct AppInstance *inst, struct AppGpu *gpu) {
+    if (CheckExtensionEnabled(VK_KHR_SURFACE_EXTENSION_NAME, gpu->inst->inst_extensions, gpu->inst->inst_extensions_count)) {
+
+        inst->vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->obj, inst->surface, &inst->surface_capabilities);
+
+        printf("\nVkSurfaceCapabilitiesKHR:\n");
+        printf("=========================\n\n");
+        printf("\tminImageCount       = %u\n", inst->surface_capabilities.minImageCount);
+        printf("\tmaxImageCount       = %u\n", inst->surface_capabilities.maxImageCount);
+        printf("\tcurrentExtent:\n");
+        printf("\t\twidth       = %u\n", inst->surface_capabilities.currentExtent.width);
+        printf("\t\theight      = %u\n", inst->surface_capabilities.currentExtent.height);
+        printf("\tminImageExtent:\n");
+        printf("\t\twidth       = %u\n", inst->surface_capabilities.minImageExtent.width);
+        printf("\t\theight      = %u\n", inst->surface_capabilities.minImageExtent.height);
+        printf("\tmaxImageExtent:\n");
+        printf("\t\twidth       = %u\n", inst->surface_capabilities.maxImageExtent.width);
+        printf("\t\theight      = %u\n", inst->surface_capabilities.maxImageExtent.height);
+        printf("\tmaxImageArrayLayers = %u\n", inst->surface_capabilities.maxImageArrayLayers);
+        printf("\tsupportedTransform:\n");
+        if (inst->surface_capabilities.supportedTransforms == 0) { printf("\t\tNone\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_INHERIT_BIT_KHR\n"); }
+        printf("\tcurrentTransform:\n");
+        if (inst->surface_capabilities.currentTransform == 0) { printf("\t\tNone\n"); }
+        if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR\n"); }
+        else if (inst->surface_capabilities.currentTransform & VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR) { printf("\t\tVK_SURFACE_TRANSFORM_INHERIT_BIT_KHR\n"); }
+        printf("\tsupportedCompositeAlpha:\n");
+        if (inst->surface_capabilities.supportedCompositeAlpha == 0) { printf("\t\tNone\n"); }
+        if (inst->surface_capabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) { printf("\t\tVK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) { printf("\t\tVK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) { printf("\t\tVK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR\n"); }
+        if (inst->surface_capabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) { printf("\t\tVK_COMPOSITE_ALPHA_INHERIT_BIT_KHR\n"); }
+        printf("\tsupportedUsageFlags:\n");
+        if (inst->surface_capabilities.supportedUsageFlags == 0) { printf("\t\tNone\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSFER_SRC_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSFER_DST_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) { printf("\t\tVK_IMAGE_USAGE_SAMPLED_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) { printf("\t\tVK_IMAGE_USAGE_STORAGE_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT\n"); }
+        if (inst->surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT\n"); }
+
+        // Get additional surface capability information from vkGetPhysicalDeviceSurfaceCapabilities2EXT
+        if (CheckExtensionEnabled(VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME, gpu->inst->inst_extensions, gpu->inst->inst_extensions_count)) {
+            memset(&inst->surface_capabilities2_ext, 0, sizeof(VkSurfaceCapabilities2EXT));
+            inst->surface_capabilities2_ext.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_EXT;
+            inst->surface_capabilities2_ext.pNext = NULL;
+
+            inst->vkGetPhysicalDeviceSurfaceCapabilities2EXT(gpu->obj, inst->surface, &inst->surface_capabilities2_ext);
+
+            printf("\nVkSurfaceCapabilities2EXT:\n");
+            printf("==========================\n\n");
+            printf("\tsupportedSurfaceCounters:\n");
+            if (inst->surface_capabilities2_ext.supportedSurfaceCounters == 0) { printf("\t\tNone\n"); }
+            if (inst->surface_capabilities2_ext.supportedSurfaceCounters & VK_SURFACE_COUNTER_VBLANK_EXT) { printf("\t\tVK_SURFACE_COUNTER_VBLANK_EXT\n"); }
+        }
+
+        // Get additional surface capability information from vkGetPhysicalDeviceSurfaceCapabilities2KHR
+        if (CheckExtensionEnabled(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, gpu->inst->inst_extensions, gpu->inst->inst_extensions_count)) {
+            if (CheckExtensionEnabled(VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME, gpu->inst->inst_extensions, gpu->inst->inst_extensions_count)) {
+                inst->shared_surface_capabilities.sType = VK_STRUCTURE_TYPE_SHARED_PRESENT_SURFACE_CAPABILITIES_KHR;
+                inst->shared_surface_capabilities.pNext = NULL;
+                inst->surface_capabilities2.pNext = &inst->shared_surface_capabilities;
+            } else {
+                inst->surface_capabilities2.pNext = NULL;
+            }
+
+            inst->surface_capabilities2.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR;
+
+            VkPhysicalDeviceSurfaceInfo2KHR surface_info;
+            surface_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR;
+            surface_info.pNext = NULL;
+            surface_info.surface = inst->surface;
+
+            inst->vkGetPhysicalDeviceSurfaceCapabilities2KHR(gpu->obj, &surface_info, &inst->surface_capabilities2);
+
+            void *place = inst->surface_capabilities2.pNext;
+            while (place) {
+                struct VkStructureHeader* work = (struct VkStructureHeader*) place;
+                if (work->sType == VK_STRUCTURE_TYPE_SHARED_PRESENT_SURFACE_CAPABILITIES_KHR) {
+                    printf("\nVkSharedPresentSurfaceCapabilitiesKHR:\n");
+                    printf("========================================\n");
+                    VkSharedPresentSurfaceCapabilitiesKHR* shared_surface_capabilities = (VkSharedPresentSurfaceCapabilitiesKHR*)place;
+                    printf("\tsharedPresentSupportedUsageFlags:\n");
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags == 0) { printf("\t\tNone\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSFER_SRC_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSFER_DST_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) { printf("\t\tVK_IMAGE_USAGE_SAMPLED_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) { printf("\t\tVK_IMAGE_USAGE_STORAGE_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT\n"); }
+                    if (shared_surface_capabilities->sharedPresentSupportedUsageFlags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) { printf("\t\tVK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT\n"); }
+                }
+
+                place = work->pNext;
+            }
+        }
+    }
+}
+
 #endif
 
 static void AppDevDumpFormatProps(const struct AppDev *dev, VkFormat fmt)
@@ -1035,7 +1213,7 @@ static void AppDevDumpFormatProps(const struct AppDev *dev, VkFormat fmt)
         if (features[i].flags == 0) {
             printf("\n\t\tNone");
         } else {
-            printf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+            printf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
                ((features[i].flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)                  ? "\n\t\tVK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT"                  : ""),  //0x0001
                ((features[i].flags & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)                  ? "\n\t\tVK_FORMAT_FEATURE_STORAGE_IMAGE_BIT"                  : ""),  //0x0002
                ((features[i].flags & VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT)           ? "\n\t\tVK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT"           : ""),  //0x0004
@@ -1049,12 +1227,13 @@ static void AppDevDumpFormatProps(const struct AppDev *dev, VkFormat fmt)
                ((features[i].flags & VK_FORMAT_FEATURE_BLIT_SRC_BIT)                       ? "\n\t\tVK_FORMAT_FEATURE_BLIT_SRC_BIT"                       : ""),  //0x0400
                ((features[i].flags & VK_FORMAT_FEATURE_BLIT_DST_BIT)                       ? "\n\t\tVK_FORMAT_FEATURE_BLIT_DST_BIT"                       : ""),  //0x0800
                ((features[i].flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)    ? "\n\t\tVK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT"    : ""),  //0x1000
-               ((features[i].flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_IMG) ? "\n\t\tVK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_IMG" : "")); //0x2000
+               ((features[i].flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_IMG) ? "\n\t\tVK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_IMG" : ""),  //0x2000
+               ((features[i].flags & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT_KHR)               ? "\n\t\tVK_FORMAT_FEATURE_TRANSFER_SRC_BIT_KHR"               : ""),  //0x4000
+               ((features[i].flags & VK_FORMAT_FEATURE_TRANSFER_DST_BIT_KHR)               ? "\n\t\tVK_FORMAT_FEATURE_TRANSFER_DST_BIT_KHR"               : "")); //0x8000
         }
     }
     printf("\n");
 }
-
 
 static void
 AppDevDump(const struct AppDev *dev)
@@ -1098,14 +1277,17 @@ static void AppGpuDumpFeatures(const struct AppGpu *gpu)
     printf("\tdepthBounds                             = %u\n", features->depthBounds                            );
     printf("\twideLines                               = %u\n", features->wideLines                              );
     printf("\tlargePoints                             = %u\n", features->largePoints                            );
+    printf("\talphaToOne                              = %u\n", features->alphaToOne                             );
+    printf("\tmultiViewport                           = %u\n", features->multiViewport                          );
+    printf("\tsamplerAnisotropy                       = %u\n", features->samplerAnisotropy                      );
     printf("\ttextureCompressionETC2                  = %u\n", features->textureCompressionETC2                 );
     printf("\ttextureCompressionASTC_LDR              = %u\n", features->textureCompressionASTC_LDR             );
     printf("\ttextureCompressionBC                    = %u\n", features->textureCompressionBC                   );
     printf("\tocclusionQueryPrecise                   = %u\n", features->occlusionQueryPrecise                  );
     printf("\tpipelineStatisticsQuery                 = %u\n", features->pipelineStatisticsQuery                );
-    printf("\tvertexSideEffects                       = %u\n", features->vertexPipelineStoresAndAtomics         );
-    printf("\ttessellationSideEffects                 = %u\n", features->fragmentStoresAndAtomics               );
-    printf("\tgeometrySideEffects                     = %u\n", features->shaderTessellationAndGeometryPointSize );
+    printf("\tvertexPipelineStoresAndAtomics          = %u\n", features->vertexPipelineStoresAndAtomics         );
+    printf("\tfragmentStoresAndAtomics                = %u\n", features->fragmentStoresAndAtomics               );
+    printf("\tshaderTessellationAndGeometryPointSize  = %u\n", features->shaderTessellationAndGeometryPointSize );
     printf("\tshaderImageGatherExtended               = %u\n", features->shaderImageGatherExtended              );
     printf("\tshaderStorageImageExtendedFormats       = %u\n", features->shaderStorageImageExtendedFormats      );
     printf("\tshaderStorageImageMultisample           = %u\n", features->shaderStorageImageMultisample          );
@@ -1122,7 +1304,6 @@ static void AppGpuDumpFeatures(const struct AppGpu *gpu)
     printf("\tshaderInt16                             = %u\n", features->shaderInt16                            );
     printf("\tshaderResourceResidency                 = %u\n", features->shaderResourceResidency                );
     printf("\tshaderResourceMinLod                    = %u\n", features->shaderResourceMinLod                   );
-    printf("\talphaToOne                              = %u\n", features->alphaToOne                             );
     printf("\tsparseBinding                           = %u\n", features->sparseBinding                          );
     printf("\tsparseResidencyBuffer                   = %u\n", features->sparseResidencyBuffer                  );
     printf("\tsparseResidencyImage2D                  = %u\n", features->sparseResidencyImage2D                 );
@@ -1293,10 +1474,8 @@ static void AppGpuDumpProps(const struct AppGpu *gpu)
 }
 // clang-format on
 
-static void
-AppDumpExtensions(const char *indent, const char *layer_name,
-                    const uint32_t extension_count,
-                    const VkExtensionProperties *extension_properties) {
+static void AppDumpExtensions(const char *indent, const char *layer_name, const uint32_t extension_count,
+                              const VkExtensionProperties *extension_properties) {
     uint32_t i;
     if (layer_name && (strlen(layer_name) > 0)) {
         printf("%s%s Extensions", indent, layer_name);
@@ -1308,33 +1487,17 @@ AppDumpExtensions(const char *indent, const char *layer_name,
         VkExtensionProperties const *ext_prop = &extension_properties[i];
 
         printf("%s\t", indent);
-        printf("%-36s: extension revision %2d\n", ext_prop->extensionName,
-               ext_prop->specVersion);
+        printf("%-36s: extension revision %2d\n", ext_prop->extensionName, ext_prop->specVersion);
     }
     fflush(stdout);
 }
-
-#if defined(VK_USE_PLATFORM_XCB_KHR)  || \
-    defined(VK_USE_PLATFORM_XLIB_KHR) || \
-    defined(VK_USE_PLATFORM_WIN32_KHR)
-// Returns true if the named extension is in the list of extensions.
-static bool HasExtension(const char *extension_name,
-                          const uint32_t extension_count,
-                          const VkExtensionProperties *extension_properties) {
-    for (uint32_t i = 0; i < extension_count; i++) {
-        if (!strcmp(extension_name, extension_properties[i].extensionName))
-            return true;
-    }
-    return false;
-}
-#endif
 
 static void AppGpuDumpQueueProps(const struct AppGpu *gpu, uint32_t id) {
     const VkQueueFamilyProperties *props = &gpu->queue_props[id];
 
     printf("VkQueueFamilyProperties[%d]:\n", id);
     printf("===========================\n");
-    char *sep = ""; // separator character
+    char *sep = "";  // separator character
     printf("\tqueueFlags         = ");
     if (props->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
         printf("GRAPHICS");
@@ -1355,11 +1518,32 @@ static void AppGpuDumpQueueProps(const struct AppGpu *gpu, uint32_t id) {
 
     printf("\tqueueCount         = %u\n", props->queueCount);
     printf("\ttimestampValidBits = %u\n", props->timestampValidBits);
-    printf("\tminImageTransferGranularity = (%d, %d, %d)\n",
-           props->minImageTransferGranularity.width,
-           props->minImageTransferGranularity.height,
-           props->minImageTransferGranularity.depth);
+    printf("\tminImageTransferGranularity = (%d, %d, %d)\n", props->minImageTransferGranularity.width,
+           props->minImageTransferGranularity.height, props->minImageTransferGranularity.depth);
     fflush(stdout);
+}
+
+// This prints a number of bytes in a human-readable format according to prefixes of the International System of Quantities (ISQ),
+// defined in ISO/IEC 80000. The prefixes used here are not SI prefixes, but rather the binary prefixes based on powers of 1024
+// (kibi-, mebi-, gibi- etc.).
+#define kBufferSize 32
+
+static char *HumanReadable(const size_t sz) {
+    const char prefixes[] = "KMGTPEZY";
+    char buf[kBufferSize];
+    int which = -1;
+    double result = (double)sz;
+    while (result > 1024 && which < 7) {
+        result /= 1024;
+        ++which;
+    }
+
+    char unit[] = "\0i";
+    if (which >= 0) {
+        unit[0] = prefixes[which];
+    }
+    snprintf(buf, kBufferSize, "%.2f %sB", result, unit);
+    return strndup(buf, kBufferSize);
 }
 
 static void AppGpuDumpMemoryProps(const struct AppGpu *gpu) {
@@ -1369,16 +1553,14 @@ static void AppGpuDumpMemoryProps(const struct AppGpu *gpu) {
     printf("=================================\n");
     printf("\tmemoryTypeCount       = %u\n", props->memoryTypeCount);
     for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
-        printf("\tmemoryTypes[%u] : \n", i);
+        printf("\tmemoryTypes[%u] :\n", i);
         printf("\t\theapIndex     = %u\n", props->memoryTypes[i].heapIndex);
-        printf("\t\tpropertyFlags = 0x%" PRIxLEAST32 ":\n",
-               props->memoryTypes[i].propertyFlags);
+        printf("\t\tpropertyFlags = 0x%" PRIxLEAST32 ":\n", props->memoryTypes[i].propertyFlags);
 
         // Print each named flag, if it is set.
         VkFlags flags = props->memoryTypes[i].propertyFlags;
-#define PRINT_FLAG(FLAG)                                                       \
-    if (flags & FLAG)                                                          \
-        printf("\t\t\t" #FLAG "\n");
+#define PRINT_FLAG(FLAG) \
+    if (flags & FLAG) printf("\t\t\t" #FLAG "\n");
         PRINT_FLAG(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
         PRINT_FLAG(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
         PRINT_FLAG(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
@@ -1389,17 +1571,16 @@ static void AppGpuDumpMemoryProps(const struct AppGpu *gpu) {
     printf("\n");
     printf("\tmemoryHeapCount       = %u\n", props->memoryHeapCount);
     for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
-        printf("\tmemoryHeaps[%u] : \n", i);
+        printf("\tmemoryHeaps[%u] :\n", i);
         const VkDeviceSize memSize = props->memoryHeaps[i].size;
-        printf("\t\tsize          = " PRINTF_SIZE_T_SPECIFIER
-               " (0x%" PRIxLEAST64 ")\n",
-               (size_t)memSize, memSize);
+        char *mem_size_human_readable = HumanReadable((const size_t)memSize);
+        printf("\t\tsize          = " PRINTF_SIZE_T_SPECIFIER " (0x%" PRIxLEAST64 ") (%s)\n", (size_t)memSize, memSize,
+               mem_size_human_readable);
+        free(mem_size_human_readable);
 
         VkMemoryHeapFlags heap_flags = props->memoryHeaps[i].flags;
-        printf("\t\tflags: \n\t\t\t");
-        printf((heap_flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
-                   ? "VK_MEMORY_HEAP_DEVICE_LOCAL_BIT\n"
-                   : "None\n");
+        printf("\t\tflags:\n\t\t\t");
+        printf((heap_flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "VK_MEMORY_HEAP_DEVICE_LOCAL_BIT\n" : "None\n");
     }
     fflush(stdout);
 }
@@ -1412,8 +1593,7 @@ static void AppGpuDump(const struct AppGpu *gpu) {
     printf("GPU%u\n", gpu->id);
     AppGpuDumpProps(gpu);
     printf("\n");
-    AppDumpExtensions("", "Device", gpu->device_extension_count,
-                        gpu->device_extensions);
+    AppDumpExtensions("", "Device", gpu->device_extension_count, gpu->device_extensions);
     printf("\n");
     for (i = 0; i < gpu->queue_count; i++) {
         AppGpuDumpQueueProps(gpu, i);
@@ -1452,49 +1632,43 @@ static void ConsoleEnlarge() {
 #endif
 
 int main(int argc, char **argv) {
-    unsigned int major, minor, patch;
+    uint32_t vulkan_major, vulkan_minor, vulkan_patch;
     struct AppGpu *gpus;
     VkPhysicalDevice *objs;
-    uint32_t gpu_count, i;
+    uint32_t gpu_count;
     VkResult err;
     struct AppInstance inst;
 
 #ifdef _WIN32
-    if (ConsoleIsExclusive())
-        ConsoleEnlarge();
+    if (ConsoleIsExclusive()) ConsoleEnlarge();
 #endif
 
-    major = VK_VERSION_MAJOR(VK_API_VERSION_1_0);
-    minor = VK_VERSION_MINOR(VK_API_VERSION_1_0);
-    patch = VK_VERSION_PATCH(VK_HEADER_VERSION);
+    vulkan_major = VK_VERSION_MAJOR(VK_API_VERSION_1_0);
+    vulkan_minor = VK_VERSION_MINOR(VK_API_VERSION_1_0);
+    vulkan_patch = VK_VERSION_PATCH(VK_HEADER_VERSION);
 
     printf("===========\n");
     printf("VULKAN INFO\n");
     printf("===========\n\n");
-    printf("Vulkan API Version: %d.%d.%d\n\n", major, minor, patch);
+    printf("Vulkan API Version: %d.%d.%d\n\n", vulkan_major, vulkan_minor, vulkan_patch);
 
     AppCreateInstance(&inst);
 
     printf("\nInstance Extensions:\n");
     printf("====================\n");
-    AppDumpExtensions("", "Instance", inst.global_extension_count,
-                        inst.global_extensions);
+    AppDumpExtensions("", "Instance", inst.global_extension_count, inst.global_extensions);
 
     err = vkEnumeratePhysicalDevices(inst.instance, &gpu_count, NULL);
-    if (err)
-        ERR_EXIT(err);
+    if (err) ERR_EXIT(err);
     objs = malloc(sizeof(objs[0]) * gpu_count);
-    if (!objs)
-        ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+    if (!objs) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
     err = vkEnumeratePhysicalDevices(inst.instance, &gpu_count, objs);
-    if (err)
-        ERR_EXIT(err);
+    if (err) ERR_EXIT(err);
 
     gpus = malloc(sizeof(gpus[0]) * gpu_count);
-    if (!gpus)
-        ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
-    for (i = 0; i < gpu_count; i++) {
-        AppGpuInit(&gpus[i], i, objs[i]);
+    if (!gpus) ERR_EXIT(VK_ERROR_OUT_OF_HOST_MEMORY);
+    for (uint32_t i = 0; i < gpu_count; i++) {
+        AppGpuInit(&gpus[i], &inst, i, objs[i]);
         printf("\n\n");
     }
 
@@ -1502,23 +1676,17 @@ int main(int argc, char **argv) {
     printf("Layers: count = %d\n", inst.global_layer_count);
     printf("=======\n");
     for (uint32_t i = 0; i < inst.global_layer_count; i++) {
-        uint32_t major, minor, patch;
+        uint32_t layer_major, layer_minor, layer_patch;
         char spec_version[64], layer_version[64];
-        VkLayerProperties const *layer_prop =
-            &inst.global_layers[i].layer_properties;
+        VkLayerProperties const *layer_prop = &inst.global_layers[i].layer_properties;
 
-        ExtractVersion(layer_prop->specVersion, &major, &minor, &patch);
-        snprintf(spec_version, sizeof(spec_version), "%d.%d.%d", major, minor,
-                 patch);
-        snprintf(layer_version, sizeof(layer_version), "%d",
-                 layer_prop->implementationVersion);
-        printf("%s (%s) Vulkan version %s, layer version %s\n",
-               layer_prop->layerName, (char *)layer_prop->description,
+        ExtractVersion(layer_prop->specVersion, &layer_major, &layer_minor, &layer_patch);
+        snprintf(spec_version, sizeof(spec_version), "%d.%d.%d", layer_major, layer_minor, layer_patch);
+        snprintf(layer_version, sizeof(layer_version), "%d", layer_prop->implementationVersion);
+        printf("%s (%s) Vulkan version %s, layer version %s\n", layer_prop->layerName, (char *)layer_prop->description,
                spec_version, layer_version);
 
-        AppDumpExtensions("\t", "Layer",
-                            inst.global_layers[i].extension_count,
-                            inst.global_layers[i].extension_properties);
+        AppDumpExtensions("\t", "Layer", inst.global_layers[i].extension_count, inst.global_layers[i].extension_properties);
 
         char *layer_name = inst.global_layers[i].layer_properties.layerName;
         printf("\tDevices \tcount = %d\n", gpu_count);
@@ -1526,8 +1694,7 @@ int main(int argc, char **argv) {
             printf("\t\tGPU id       : %u (%s)\n", j, gpus[j].props.deviceName);
             uint32_t count = 0;
             VkExtensionProperties *props;
-            AppGetPhysicalDeviceLayerExtensions(&gpus[j], layer_name,
-                                                     &count, &props);
+            AppGetPhysicalDeviceLayerExtensions(&gpus[j], layer_name, &count, &props);
             AppDumpExtensions("\t\t", "Layer-Device", count, props);
             free(props);
         }
@@ -1552,62 +1719,60 @@ int main(int argc, char **argv) {
 #endif
 //--WIN32--
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-    if (HasExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-                     inst.global_extension_count, inst.global_extensions)) {
+    if (CheckExtensionEnabled(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, inst.inst_extensions, inst.inst_extensions_count)) {
         AppCreateWin32Window(&inst);
-        for (i = 0; i < gpu_count; i++) {
+        for (uint32_t i = 0; i < gpu_count; i++) {
             AppCreateWin32Surface(&inst);
             printf("GPU id       : %u (%s)\n", i, gpus[i].props.deviceName);
             printf("Surface type : %s\n", VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
             format_count += AppDumpSurfaceFormats(&inst, &gpus[i]);
             present_mode_count += AppDumpSurfacePresentModes(&inst, &gpus[i]);
+            AppDumpSurfaceCapabilities(&inst, &gpus[i]);
             AppDestroySurface(&inst);
         }
         AppDestroyWin32Window(&inst);
     }
 //--XCB--
 #elif VK_USE_PLATFORM_XCB_KHR
-    if (HasExtension(VK_KHR_XCB_SURFACE_EXTENSION_NAME,
-                      inst.global_extension_count, inst.global_extensions)) {
+    if (CheckExtensionEnabled(VK_KHR_XCB_SURFACE_EXTENSION_NAME, inst.inst_extensions, inst.inst_extensions_count)) {
         AppCreateXcbWindow(&inst);
-        for (i = 0; i < gpu_count; i++) {
+        for (uint32_t i = 0; i < gpu_count; i++) {
             AppCreateXcbSurface(&inst);
             printf("GPU id       : %u (%s)\n", i, gpus[i].props.deviceName);
             printf("Surface type : %s\n", VK_KHR_XCB_SURFACE_EXTENSION_NAME);
             format_count += AppDumpSurfaceFormats(&inst, &gpus[i]);
             present_mode_count += AppDumpSurfacePresentModes(&inst, &gpus[i]);
+            AppDumpSurfaceCapabilities(&inst, &gpus[i]);
             AppDestroySurface(&inst);
         }
         AppDestroyXcbWindow(&inst);
     }
 //--XLIB--
 #elif VK_USE_PLATFORM_XLIB_KHR
-    if (HasExtension(VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
-                      inst.global_extension_count, inst.global_extensions)) {
+    if (CheckExtensionEnabled(VK_KHR_XLIB_SURFACE_EXTENSION_NAME, inst.inst_extensions, inst.inst_extensions_count)) {
         AppCreateXlibWindow(&inst);
-        for (i = 0; i < gpu_count; i++) {
+        for (uint32_t i = 0; i < gpu_count; i++) {
             AppCreateXlibSurface(&inst);
             printf("GPU id       : %u (%s)\n", i, gpus[i].props.deviceName);
             printf("Surface type : %s\n", VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
             format_count += AppDumpSurfaceFormats(&inst, &gpus[i]);
             present_mode_count += AppDumpSurfacePresentModes(&inst, &gpus[i]);
+            AppDumpSurfaceCapabilities(&inst, &gpus[i]);
             AppDestroySurface(&inst);
         }
         AppDestroyXlibWindow(&inst);
     }
 #endif
     // TODO: Android / Wayland / MIR
-    if (!format_count && !present_mode_count)
-        printf("None found\n");
+    if (!format_count && !present_mode_count) printf("None found\n");
     //---------
 
-    for (i = 0; i < gpu_count; i++) {
+    for (uint32_t i = 0; i < gpu_count; i++) {
         AppGpuDump(&gpus[i]);
         printf("\n\n");
     }
 
-    for (i = 0; i < gpu_count; i++)
-        AppGpuDestroy(&gpus[i]);
+    for (uint32_t i = 0; i < gpu_count; i++) AppGpuDestroy(&gpus[i]);
     free(gpus);
     free(objs);
 
@@ -1615,8 +1780,7 @@ int main(int argc, char **argv) {
 
     fflush(stdout);
 #ifdef _WIN32
-    if (ConsoleIsExclusive())
-        Sleep(INFINITE);
+    if (ConsoleIsExclusive()) Sleep(INFINITE);
 #endif
 
     return 0;

@@ -24,8 +24,6 @@
 VkTestFramework::VkTestFramework() {}
 VkTestFramework::~VkTestFramework() {}
 
-bool VkTestFramework::m_use_glsl = false;
-
 VkFormat VkTestFramework::GetFormat(VkInstance instance, vk_testing::Device *device) {
     VkFormatProperties format_props;
     vkGetPhysicalDeviceFormatProperties(device->phy().handle(), VK_FORMAT_B8G8R8A8_UNORM, &format_props);
@@ -77,7 +75,6 @@ shaderc_shader_kind MapShadercType(VkShaderStageFlagBits vkShader) {
 // Compile a given string containing GLSL into SPIR-V
 // Return value of false means an error was encountered
 bool VkTestFramework::GLSLtoSPV(const VkShaderStageFlagBits shader_type, const char *pshader, std::vector<unsigned int> &spirv) {
-
     // On Android, use shaderc instead.
     shaderc::Compiler compiler;
     shaderc::SpvCompilationResult result =

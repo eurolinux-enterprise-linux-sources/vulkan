@@ -59,7 +59,7 @@ using namespace std;
 class VkImageObj;
 
 class VkTestFramework : public ::testing::Test {
-  public:
+   public:
     VkTestFramework();
     ~VkTestFramework();
 
@@ -69,7 +69,6 @@ class VkTestFramework : public ::testing::Test {
     static void Finish();
 
     bool GLSLtoSPV(const VkShaderStageFlagBits shader_type, const char *pshader, std::vector<unsigned int> &spv);
-    static bool m_use_glsl;
     static bool m_canonicalize_spv;
     static bool m_strip_spv;
     static bool m_do_everything_spv;
@@ -77,7 +76,7 @@ class VkTestFramework : public ::testing::Test {
     char **ReadFileData(const char *fileName);
     void FreeFileData(char **data);
 
-  private:
+   private:
     int m_compile_options;
     int m_num_shader_strings;
     TBuiltInResource Resources;
@@ -93,10 +92,10 @@ class VkTestFramework : public ::testing::Test {
 };
 
 class TestEnvironment : public ::testing::Environment {
-  public:
+   public:
     void SetUp();
 
     void TearDown();
 };
 
-#endif // VKTESTFRAMEWORK_H
+#endif  // VKTESTFRAMEWORK_H

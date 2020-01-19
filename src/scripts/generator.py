@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -i
 #
-# Copyright (c) 2013-2016 The Khronos Group Inc.
+# Copyright (c) 2013-2017 The Khronos Group Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import unicode_literals
 import io,os,re,sys
 
 def write( *args, **kwargs ):
-    file = kwargs.pop(u'file',sys.stdout)
-    end = kwargs.pop( u'end',u'\n')
-    file.write( u' '.join([str(arg) for arg in args]) )
-    file.write( end )
+    file = kwargs.pop('file',sys.stdout)
+    end = kwargs.pop('end','\n')
+    file.write(' '.join([str(arg) for arg in args]))
+    file.write(end)
 
 # noneStr - returns string argument, or "" if argument is None.
 # Used in converting etree Elements into text.
@@ -354,6 +355,13 @@ class OutputGenerator:
     # Struct (e.g. C "struct" type) generation
     def genStruct(self, typeinfo, name):
         self.validateFeature('struct', name)
+
+        # The mixed-mode <member> tags may contain no-op <comment> tags.
+        # It is convenient to remove them here where all output generators
+        # will benefit.
+        for member in typeinfo.elem.findall('.//member'):
+            for comment in member.findall('comment'):
+                member.remove(comment)
     #
     # Group (e.g. C "enum" type) generation
     def genGroup(self, groupinfo, name):
