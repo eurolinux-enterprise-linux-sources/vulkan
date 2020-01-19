@@ -1,27 +1,27 @@
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt.da	2017-09-21 02:31:10.000000000 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/CMakeLists.txt	2017-10-04 08:46:02.569350449 +1000
-@@ -13,7 +13,6 @@ set(MAJOR "1")
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/CMakeLists.txt.da Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/CMakeLists.txt
+--- Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/CMakeLists.txt.da	2018-04-20 08:07:56.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/CMakeLists.txt	2018-05-08 07:50:10.179958598 +1000
+@@ -17,7 +17,6 @@ set(MAJOR "1")
  string(TOLOWER ${API_NAME} API_LOWERCASE)
  
  set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 -find_package(PythonInterp 3 REQUIRED)
  
- if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-     set(FALLBACK_CONFIG_DIRS "/etc/xdg" CACHE STRING
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py.da	2017-09-21 02:31:10.000000000 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/lvl_genvk.py	2017-10-04 08:46:02.569350449 +1000
+ option(USE_CCACHE "Use ccache" OFF)
+ if (USE_CCACHE)
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/lvl_genvk.py.da Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/lvl_genvk.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/lvl_genvk.py.da	2018-04-20 08:07:56.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/lvl_genvk.py	2018-05-08 07:50:10.179958598 +1000
 @@ -1,4 +1,4 @@
 -#!/usr/bin/python3
 +#!/usr/bin/python
  #
- # Copyright (c) 2013-2017 The Khronos Group Inc.
+ # Copyright (c) 2013-2018 The Khronos Group Inc.
  #
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py.da	2017-10-04 12:25:30.838968488 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_generator.py	2017-10-04 12:25:39.967216211 +1000
-@@ -242,7 +242,7 @@ class ObjectTrackerOutputGenerator(Outpu
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/object_tracker_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/object_tracker_generator.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/object_tracker_generator.py.da	2018-04-20 08:07:56.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/object_tracker_generator.py	2018-05-08 07:50:10.180958624 +1000
+@@ -263,7 +263,7 @@ class ObjectTrackerOutputGenerator(Outpu
              ]
          for vuid_filename in vuid_filename_locations:
              if os.path.isfile(vuid_filename):
@@ -30,10 +30,10 @@ diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/object_tracker_ge
                  break
          if self.vuid_file == None:
              print("Error: Could not find vk_validation_error_messages.h")
-diff -up Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py
---- Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py.da	2017-10-04 12:25:34.090056715 +1000
-+++ Vulkan-LoaderAndValidationLayers-sdk-1.0.61.1/scripts/parameter_validation_generator.py	2017-10-04 12:25:46.741400047 +1000
-@@ -197,7 +197,7 @@ class ParameterValidationOutputGenerator
+diff -up Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/parameter_validation_generator.py.da Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/parameter_validation_generator.py
+--- Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/parameter_validation_generator.py.da	2018-04-20 08:07:56.000000000 +1000
++++ Vulkan-LoaderAndValidationLayers-sdk-1.1.73.0/scripts/parameter_validation_generator.py	2018-05-08 07:50:10.180958624 +1000
+@@ -195,7 +195,7 @@ class ParameterValidationOutputGenerator
              ]
          for vuid_filename in vuid_filename_locations:
              if os.path.isfile(vuid_filename):

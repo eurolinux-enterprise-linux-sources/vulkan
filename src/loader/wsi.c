@@ -55,6 +55,12 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
     ptr_instance->wsi_android_surface_enabled = false;
 #endif  // VK_USE_PLATFORM_ANDROID_KHR
+#ifdef VK_USE_PLATFORM_MACOS_MVK
+    ptr_instance->wsi_macos_surface_enabled = false;
+#endif  // VK_USE_PLATFORM_MACOS_MVK
+#ifdef VK_USE_PLATFORM_IOS_MVK
+    ptr_instance->wsi_ios_surface_enabled = false;
+#endif  // VK_USE_PLATFORM_IOS_MVK
 
     ptr_instance->wsi_display_enabled = false;
 
@@ -99,6 +105,18 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
             continue;
         }
 #endif  // VK_USE_PLATFORM_ANDROID_KHR
+#ifdef VK_USE_PLATFORM_MACOS_MVK
+        if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_MVK_MACOS_SURFACE_EXTENSION_NAME) == 0) {
+            ptr_instance->wsi_macos_surface_enabled = true;
+            continue;
+        }
+#endif  // VK_USE_PLATFORM_MACOS_MVK
+#ifdef VK_USE_PLATFORM_IOS_MVK
+        if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_MVK_IOS_SURFACE_EXTENSION_NAME) == 0) {
+            ptr_instance->wsi_ios_surface_enabled = true;
+            continue;
+        }
+#endif  // VK_USE_PLATFORM_IOS_MVK
         if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_DISPLAY_EXTENSION_NAME) == 0) {
             ptr_instance->wsi_display_enabled = true;
             continue;
@@ -378,8 +396,7 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice devic
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
-                                                             const VkAllocationCallbacks *pAllocator,
-                                                             VkSwapchainKHR *pSwapchain) {
+                                                             const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain) {
     uint32_t icd_index = 0;
     struct loader_device *dev;
     struct loader_icd_term *icd_term = loader_get_icd_and_device(device, &dev, &icd_index);
@@ -1066,7 +1083,6 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateAndroidSurfaceKHR(VkInstance ins
     }
 
     pIcdSurface->base.platform = VK_ICD_WSI_PLATFORM_ANDROID;
-    pIcdSurface->dpy = dpy;
     pIcdSurface->window = window;
 
     *pSurface = (VkSurfaceKHR)pIcdSurface;
@@ -1075,6 +1091,129 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateAndroidSurfaceKHR(VkInstance ins
 }
 
 #endif  // VK_USE_PLATFORM_ANDROID_KHR
+
+#ifdef VK_USE_PLATFORM_MACOS_MVK
+
+// Functions for the VK_MVK_macos_surface extension:
+
+// This is the trampoline entrypoint for CreateMacOSSurfaceMVK
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateMacOSSurfaceMVK(VkInstance instance,
+                                                                     const VkMacOSSurfaceCreateInfoMVK *pCreateInfo,
+                                                                     const VkAllocationCallbacks *pAllocator,
+                                                                     VkSurfaceKHR *pSurface) {
+    const VkLayerInstanceDispatchTable *disp;
+    disp = loader_get_instance_layer_dispatch(instance);
+    VkResult res;
+
+    res = disp->CreateMacOSSurfaceMVK(instance, pCreateInfo, pAllocator, pSurface);
+    return res;
+}
+
+// This is the instance chain terminator function for CreateMacOSSurfaceKHR
+VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateMacOSSurfaceMVK(VkInstance instance, const VkMacOSSurfaceCreateInfoMVK *pCreateInfo,
+                                                                const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface) {
+    VkResult vkRes = VK_SUCCESS;
+    VkIcdSurface *pIcdSurface = NULL;
+    uint32_t i = 0;
+
+    // First, check to ensure the appropriate extension was enabled:
+    struct loader_instance *ptr_instance = loader_get_instance(instance);
+    if (!ptr_instance->wsi_macos_surface_enabled) {
+        loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                   "VK_MVK_macos_surface extension not enabled.  vkCreateMacOSSurfaceMVK not executed!\n");
+        vkRes = VK_ERROR_EXTENSION_NOT_PRESENT;
+        goto out;
+    }
+
+    // Next, if so, proceed with the implementation of this function:
+    pIcdSurface = AllocateIcdSurfaceStruct(ptr_instance, sizeof(pIcdSurface->macos_surf.base), sizeof(pIcdSurface->macos_surf));
+    if (pIcdSurface == NULL) {
+        vkRes = VK_ERROR_OUT_OF_HOST_MEMORY;
+        goto out;
+    }
+
+    pIcdSurface->macos_surf.base.platform = VK_ICD_WSI_PLATFORM_MACOS;
+    pIcdSurface->macos_surf.pView = pCreateInfo->pView;
+
+    // Loop through each ICD and determine if they need to create a surface
+    for (struct loader_icd_term *icd_term = ptr_instance->icd_terms; icd_term != NULL; icd_term = icd_term->next, i++) {
+        if (icd_term->scanned_icd->interface_version >= ICD_VER_SUPPORTS_ICD_SURFACE_KHR) {
+            if (NULL != icd_term->dispatch.CreateMacOSSurfaceMVK) {
+                vkRes = icd_term->dispatch.CreateMacOSSurfaceMVK(icd_term->instance, pCreateInfo, pAllocator,
+                                                                 &pIcdSurface->real_icd_surfaces[i]);
+                if (VK_SUCCESS != vkRes) {
+                    goto out;
+                }
+            }
+        }
+    }
+
+    *pSurface = (VkSurfaceKHR)pIcdSurface;
+
+out:
+
+    if (VK_SUCCESS != vkRes && NULL != pIcdSurface) {
+        if (NULL != pIcdSurface->real_icd_surfaces) {
+            i = 0;
+            for (struct loader_icd_term *icd_term = ptr_instance->icd_terms; icd_term != NULL; icd_term = icd_term->next, i++) {
+                if ((VkSurfaceKHR)NULL != pIcdSurface->real_icd_surfaces[i] && NULL != icd_term->dispatch.DestroySurfaceKHR) {
+                    icd_term->dispatch.DestroySurfaceKHR(icd_term->instance, pIcdSurface->real_icd_surfaces[i], pAllocator);
+                }
+            }
+            loader_instance_heap_free(ptr_instance, pIcdSurface->real_icd_surfaces);
+        }
+        loader_instance_heap_free(ptr_instance, pIcdSurface);
+    }
+
+    return vkRes;
+}
+
+#endif  // VK_USE_PLATFORM_MACOS_MVK
+
+#ifdef VK_USE_PLATFORM_IOS_MVK
+
+// Functions for the VK_MVK_ios_surface extension:
+
+// This is the trampoline entrypoint for CreateIOSSurfaceMVK
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateIOSSurfaceMVK(VkInstance instance,
+                                                                   const VkIOSSurfaceCreateInfoMVK *pCreateInfo,
+                                                                   const VkAllocationCallbacks *pAllocator,
+                                                                   VkSurfaceKHR *pSurface) {
+    const VkLayerInstanceDispatchTable *disp;
+    disp = loader_get_instance_layer_dispatch(instance);
+    VkResult res;
+
+    res = disp->CreateIOSSurfaceMVK(instance, pCreateInfo, pAllocator, pSurface);
+    return res;
+}
+
+// This is the instance chain terminator function for CreateIOSSurfaceKHR
+VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateIOSSurfaceMVK(VkInstance instance, const VkIOSSurfaceCreateInfoMVK *pCreateInfo,
+                                                              const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface) {
+    // First, check to ensure the appropriate extension was enabled:
+    struct loader_instance *ptr_instance = loader_get_instance(instance);
+    if (!ptr_instance->wsi_ios_surface_enabled) {
+        loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                   "VK_MVK_ios_surface extension not enabled.  vkCreateIOSSurfaceMVK not executed!\n");
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+
+    // Next, if so, proceed with the implementation of this function:
+    VkIcdSurfaceIOS *pIcdSurface =
+        loader_instance_heap_alloc(ptr_instance, sizeof(VkIcdSurfaceIOS), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (pIcdSurface == NULL) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+
+    pIcdSurface->base.platform = VK_ICD_WSI_PLATFORM_IOS;
+    pIcdSurface->pView = pCreateInfo->pView;
+
+    *pSurface = (VkSurfaceKHR)pIcdSurface;
+
+    return VK_SUCCESS;
+}
+
+#endif  // VK_USE_PLATFORM_IOS_MVK
 
 // Functions for the VK_KHR_display instance extension:
 LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice physicalDevice,
@@ -1386,6 +1525,76 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateSharedSwapchainsKHR(VkDevice dev
     return VK_SUCCESS;
 }
 
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetDeviceGroupPresentCapabilitiesKHR(
+    VkDevice                                    device,
+    VkDeviceGroupPresentCapabilitiesKHR*        pDeviceGroupPresentCapabilities) {
+    const VkLayerDispatchTable *disp = loader_get_dispatch(device);
+    return disp->GetDeviceGroupPresentCapabilitiesKHR(device, pDeviceGroupPresentCapabilities);
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetDeviceGroupSurfacePresentModesKHR(
+    VkDevice                                    device,
+    VkSurfaceKHR                                surface,
+    VkDeviceGroupPresentModeFlagsKHR*           pModes) {
+    const VkLayerDispatchTable *disp = loader_get_dispatch(device);
+    return disp->GetDeviceGroupSurfacePresentModesKHR(device, surface, pModes);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetDeviceGroupSurfacePresentModesKHR(
+    VkDevice                                    device,
+    VkSurfaceKHR                                surface,
+    VkDeviceGroupPresentModeFlagsKHR*           pModes) {
+    uint32_t icd_index = 0;
+    struct loader_device *dev;
+    struct loader_icd_term *icd_term = loader_get_icd_and_device(device, &dev, &icd_index);
+    if (NULL != icd_term && NULL != icd_term->dispatch.GetDeviceGroupSurfacePresentModesKHR) {
+        VkIcdSurface *icd_surface = (VkIcdSurface *)(uintptr_t)surface;
+        if (NULL != icd_surface->real_icd_surfaces && (VkSurfaceKHR)NULL != icd_surface->real_icd_surfaces[icd_index]) {
+            return icd_term->dispatch.GetDeviceGroupSurfacePresentModesKHR(device, icd_surface->real_icd_surfaces[icd_index], pModes);
+        }
+        return icd_term->dispatch.GetDeviceGroupSurfacePresentModesKHR(device, surface, pModes);
+    }
+    return VK_SUCCESS;
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDevicePresentRectanglesKHR(
+    VkPhysicalDevice                            physicalDevice,
+    VkSurfaceKHR                                surface,
+    uint32_t*                                   pRectCount,
+    VkRect2D*                                   pRects) {
+    const VkLayerInstanceDispatchTable *disp;
+    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
+    disp = loader_get_instance_layer_dispatch(physicalDevice);
+    return disp->GetPhysicalDevicePresentRectanglesKHR(unwrapped_phys_dev, surface, pRectCount, pRects);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetPhysicalDevicePresentRectanglesKHR(
+    VkPhysicalDevice                            physicalDevice,
+    VkSurfaceKHR                                surface,
+    uint32_t*                                   pRectCount,
+    VkRect2D*                                   pRects) {
+    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
+    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
+    if (NULL == icd_term->dispatch.GetPhysicalDevicePresentRectanglesKHR) {
+        loader_log(icd_term->this_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                   "ICD associated with VkPhysicalDevice does not support GetPhysicalDevicePresentRectanglesKHX");
+    }
+    VkIcdSurface *icd_surface = (VkIcdSurface *)(surface);
+    uint8_t icd_index = phys_dev_term->icd_index;
+    if (NULL != icd_surface->real_icd_surfaces && NULL != (void *)icd_surface->real_icd_surfaces[icd_index]) {
+        return icd_term->dispatch.GetPhysicalDevicePresentRectanglesKHR(phys_dev_term->phys_dev, icd_surface->real_icd_surfaces[icd_index], pRectCount, pRects);
+    }
+    return icd_term->dispatch.GetPhysicalDevicePresentRectanglesKHR(phys_dev_term->phys_dev, surface, pRectCount, pRects);
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
+    VkDevice                                    device,
+    const VkAcquireNextImageInfoKHR*            pAcquireInfo,
+    uint32_t*                                   pImageIndex) {
+    const VkLayerDispatchTable *disp = loader_get_dispatch(device);
+    return disp->AcquireNextImage2KHR(device, pAcquireInfo, pImageIndex);
+}
+
 bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char *name, void **addr) {
     *addr = NULL;
 
@@ -1408,6 +1617,21 @@ bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char
     }
     if (!strcmp("vkGetPhysicalDeviceSurfacePresentModesKHR", name)) {
         *addr = ptr_instance->wsi_surface_enabled ? (void *)vkGetPhysicalDeviceSurfacePresentModesKHR : NULL;
+        return true;
+    }
+
+    if (!strcmp("vkGetDeviceGroupPresentCapabilitiesKHR", name)) {
+        *addr = ptr_instance->wsi_surface_enabled ? (void *)vkGetDeviceGroupPresentCapabilitiesKHR : NULL;
+        return true;
+    }
+
+    if (!strcmp("vkGetDeviceGroupSurfacePresentModesKHR", name)) {
+        *addr = ptr_instance->wsi_surface_enabled ? (void *)vkGetDeviceGroupSurfacePresentModesKHR : NULL;
+        return true;
+    }
+
+    if (!strcmp("vkGetPhysicalDevicePresentRectanglesKHR", name)) {
+        *addr = ptr_instance->wsi_surface_enabled ? (void *)vkGetPhysicalDevicePresentRectanglesKHR : NULL;
         return true;
     }
 
@@ -1435,6 +1659,10 @@ bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char
     }
     if (!strcmp("vkQueuePresentKHR", name)) {
         *addr = (void *)vkQueuePresentKHR;
+        return true;
+    }
+    if (!strcmp("vkAcquireNextImage2KHR", name)) {
+        *addr = (void *)vkAcquireNextImage2KHR;
         return true;
     }
 
@@ -1502,10 +1730,26 @@ bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char
 
     // Functions for the VK_KHR_android_surface extension:
     if (!strcmp("vkCreateAndroidSurfaceKHR", name)) {
-        *addr = ptr_instance->wsi_xlib_surface_enabled ? (void *)vkCreateAndroidSurfaceKHR : NULL;
+        *addr = ptr_instance->wsi_android_surface_enabled ? (void *)vkCreateAndroidSurfaceKHR : NULL;
         return true;
     }
 #endif  // VK_USE_PLATFORM_ANDROID_KHR
+#ifdef VK_USE_PLATFORM_MACOS_MVK
+
+    // Functions for the VK_MVK_macos_surface extension:
+    if (!strcmp("vkCreateMacOSSurfaceMVK", name)) {
+        *addr = ptr_instance->wsi_macos_surface_enabled ? (void *)vkCreateMacOSSurfaceMVK : NULL;
+        return true;
+    }
+#endif  // VK_USE_PLATFORM_MACOS_MVK
+#ifdef VK_USE_PLATFORM_IOS_MVK
+
+    // Functions for the VK_MVK_ios_surface extension:
+    if (!strcmp("vkCreateIOSSurfaceMVK", name)) {
+        *addr = ptr_instance->wsi_ios_surface_enabled ? (void *)vkCreateIOSSurfaceMVK : NULL;
+        return true;
+    }
+#endif  // VK_USE_PLATFORM_IOS_MVK
 
     // Functions for VK_KHR_display extension:
     if (!strcmp("vkGetPhysicalDeviceDisplayPropertiesKHR", name)) {

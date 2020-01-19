@@ -24,6 +24,10 @@ import xml.etree.ElementTree as etree
 from generator import *
 from collections import namedtuple
 from vuid_mapping import *
+from common_codegen import *
+
+# This is a workaround to use a Python 2.7 and 3.x compatible syntax.
+from io import open
 
 # ObjectTrackerGeneratorOptions - subclass of GeneratorOptions.
 #
@@ -69,34 +73,34 @@ class ObjectTrackerGeneratorOptions(GeneratorOptions):
                  defaultExtensions = None,
                  addExtensions = None,
                  removeExtensions = None,
+                 emitExtensions = None,
                  sortProcedure = regSortFeatures,
                  prefixText = "",
                  genFuncPointers = True,
                  protectFile = True,
                  protectFeature = True,
-                 protectProto = None,
-                 protectProtoStr = None,
                  apicall = '',
                  apientry = '',
                  apientryp = '',
                  indentFuncProto = True,
                  indentFuncPointer = False,
-                 alignFuncParam = 0):
+                 alignFuncParam = 0,
+                 expandEnumerants = True):
         GeneratorOptions.__init__(self, filename, directory, apiname, profile,
                                   versions, emitversions, defaultExtensions,
-                                  addExtensions, removeExtensions, sortProcedure)
+                                  addExtensions, removeExtensions, emitExtensions, sortProcedure)
         self.prefixText      = prefixText
         self.genFuncPointers = genFuncPointers
         self.protectFile     = protectFile
         self.protectFeature  = protectFeature
-        self.protectProto    = protectProto
-        self.protectProtoStr = protectProtoStr
         self.apicall         = apicall
         self.apientry        = apientry
         self.apientryp       = apientryp
         self.indentFuncProto = indentFuncProto
         self.indentFuncPointer = indentFuncPointer
         self.alignFuncParam  = alignFuncParam
+        self.expandEnumerants = expandEnumerants
+
 
 # ObjectTrackerOutputGenerator - subclass of OutputGenerator.
 # Generates object_tracker layer object validation code
@@ -136,6 +140,7 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
             'vkDestroySwapchainKHR',
             'vkDestroyDescriptorPool',
             'vkDestroyCommandPool',
+            'vkGetPhysicalDeviceQueueFamilyProperties2',
             'vkGetPhysicalDeviceQueueFamilyProperties2KHR',
             'vkResetDescriptorPool',
             'vkBeginCommandBuffer',
@@ -165,7 +170,20 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
             'vkNegotiateLoaderLayerInterfaceVersion',
             'vkCreateComputePipelines',
             'vkGetDeviceQueue',
+            'vkGetDeviceQueue2',
             'vkGetSwapchainImagesKHR',
+            'vkCreateDescriptorSetLayout',
+            'vkCreateDebugUtilsMessengerEXT',
+            'vkDestroyDebugUtilsMessengerEXT',
+            'vkSubmitDebugUtilsMessageEXT',
+            'vkSetDebugUtilsObjectNameEXT',
+            'vkSetDebugUtilsObjectTagEXT',
+            'vkQueueBeginDebugUtilsLabelEXT',
+            'vkQueueEndDebugUtilsLabelEXT',
+            'vkQueueInsertDebugUtilsLabelEXT',
+            'vkCmdBeginDebugUtilsLabelEXT',
+            'vkCmdEndDebugUtilsLabelEXT',
+            'vkCmdInsertDebugUtilsLabelEXT',
             ]
         # These VUIDS are not implicit, but are best handled in this layer. Codegen for vkDestroy calls will generate a key
         # which is translated here into a good VU.  Saves ~40 checks.
@@ -234,6 +252,9 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
         self.valid_vuids = set()       # Set of all valid VUIDs
         self.vuid_file = None
         # Cover cases where file is built from scripts directory, Lin/Win, or Android build structure
+        # Set cwd to the script directory to more easily locate the header.
+        previous_dir = os.getcwd()
+        os.chdir(os.path.dirname(sys.argv[0]))
         vuid_filename_locations = [
             './vk_validation_error_messages.h',
             '../layers/vk_validation_error_messages.h',
@@ -246,7 +267,8 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
                 break
         if self.vuid_file == None:
             print("Error: Could not find vk_validation_error_messages.h")
-            quit()
+            sys.exit(1)
+        os.chdir(previous_dir)
     #
     # Check if the parameter passed in is optional
     def paramIsOptional(self, param):
@@ -268,6 +290,11 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
                     else:
                         print('Unrecognized len attribute value',val)
                 isoptional = opts
+        if not isoptional:
+            # Matching logic in parameter validation and ValidityOutputGenerator.isHandleOptional
+            optString = param.attrib.get('noautovalidity')
+            if optString and optString == 'true':
+                isoptional = True;
         return isoptional
     #
     # Convert decimal number to 8 digit hexadecimal lower-case representation
@@ -309,6 +336,7 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
     # Check if the parameter passed in is a pointer to an array
     def paramIsArray(self, param):
         return param.attrib.get('len') is not None
+
     #
     # Generate the object tracker undestroyed object validation function
     def GenReportFunc(self):
@@ -320,6 +348,19 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
                 output_func += '    DeviceReportUndestroyedObjects(device, %s, error_code);\n' % (self.GetVulkanObjType(handle))
         output_func += '}\n'
         return output_func
+
+    #
+    # Generate the object tracker undestroyed object destruction function
+    def GenDestroyFunc(self):
+        output_func = ''
+        output_func += 'void DestroyUndestroyedObjects(VkDevice device) {\n'
+        output_func += '    DeviceDestroyUndestroyedObjects(device, kVulkanObjectTypeCommandBuffer);\n'
+        for handle in self.object_types:
+            if self.isHandleTypeNonDispatchable(handle):
+                output_func += '    DeviceDestroyUndestroyedObjects(device, %s);\n' % (self.GetVulkanObjType(handle))
+        output_func += '}\n'
+        return output_func
+
     #
     # Called at beginning of processing as file is opened
     def beginFile(self, genOpts):
@@ -379,8 +420,12 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
         # Build undestroyed objects reporting function
         report_func = self.GenReportFunc()
         self.newline()
+        # Build undestroyed objects destruction function
+        destroy_func = self.GenDestroyFunc()
+        self.newline()
         write('// ObjectTracker undestroyed objects validation function', file=self.outFile)
         write('%s' % report_func, file=self.outFile)
+        write('%s' % destroy_func, file=self.outFile)
         # Actually write the interface to the output file.
         if (self.emit):
             self.newline()
@@ -388,9 +433,6 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
                 write('#ifdef', self.featureExtraProtect, file=self.outFile)
             # Write the object_tracker code to the file
             if (self.sections['command']):
-                if (self.genOpts.protectProto):
-                    write(self.genOpts.protectProto,
-                          self.genOpts.protectProtoStr, file=self.outFile)
                 write('\n'.join(self.sections['command']), end=u'', file=self.outFile)
             if (self.featureExtraProtect != None):
                 write('\n#endif //', self.featureExtraProtect, file=self.outFile)
@@ -412,8 +454,9 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
         # Start processing in superclass
         OutputGenerator.beginFeature(self, interface, emit)
         self.headerVersion = None
+        self.featureExtraProtect = GetFeatureProtect(interface)
 
-        if self.featureName != 'VK_VERSION_1_0':
+        if self.featureName != 'VK_VERSION_1_0' and self.featureName != 'VK_VERSION_1_1':
             white_list_entry = []
             if (self.featureExtraProtect != None):
                 white_list_entry += [ '#ifdef %s' % self.featureExtraProtect ]
@@ -432,14 +475,14 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
         OutputGenerator.endFeature(self)
     #
     # Process enums, structs, etc.
-    def genType(self, typeinfo, name):
-        OutputGenerator.genType(self, typeinfo, name)
+    def genType(self, typeinfo, name, alias):
+        OutputGenerator.genType(self, typeinfo, name, alias)
         typeElem = typeinfo.elem
         # If the type is a struct type, traverse the imbedded <member> tags generating a structure.
         # Otherwise, emit the tag text.
         category = typeElem.get('category')
         if (category == 'struct' or category == 'union'):
-            self.genStruct(typeinfo, name)
+            self.genStruct(typeinfo, name, alias)
         if category == 'handle':
             self.object_types.append(name)
     #
@@ -520,8 +563,8 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
     # <member> tags instead of freeform C type declarations. The <member> tags are just like
     # <param> tags - they are a declaration of a struct or union member. Only simple member
     # declarations are supported (no nested structs etc.)
-    def genStruct(self, typeinfo, typeName):
-        OutputGenerator.genStruct(self, typeinfo, typeName)
+    def genStruct(self, typeinfo, typeName, alias):
+        OutputGenerator.genStruct(self, typeinfo, typeName, alias)
         members = typeinfo.elem.findall('.//member')
         # Iterate over members once to get length parameters for arrays
         lens = set()
@@ -706,13 +749,9 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
             commonparent_vuid_string = 'VUID-%s-commonparent' % parent_name
             parent_vuid = self.GetVuid(commonparent_vuid_string)
         if obj_count is not None:
-            pre_call_code += '%s    if (%s%s) {\n' % (indent, prefix, obj_name)
-            indent = self.incIndent(indent)
             pre_call_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, obj_count, index)
             indent = self.incIndent(indent)
             pre_call_code += '%s    skip |= ValidateObject(%s, %s%s[%s], %s, %s, %s, %s);\n' % (indent, disp_name, prefix, obj_name, index, self.GetVulkanObjType(obj_type), null_allowed, param_vuid, parent_vuid)
-            indent = self.decIndent(indent)
-            pre_call_code += '%s    }\n' % indent
             indent = self.decIndent(indent)
             pre_call_code += '%s    }\n' % indent
         else:
@@ -820,10 +859,10 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
         return paramdecl, param_pre_code, param_post_code
     #
     # Capture command parameter info needed to create, destroy, and validate objects
-    def genCmd(self, cmdinfo, cmdname):
+    def genCmd(self, cmdinfo, cmdname, alias):
 
         # Add struct-member type information to command parameter information
-        OutputGenerator.genCmd(self, cmdinfo, cmdname)
+        OutputGenerator.genCmd(self, cmdinfo, cmdname, alias)
         members = cmdinfo.elem.findall('.//param')
         # Iterate over members once to get length parameters for arrays
         lens = set()
@@ -934,7 +973,12 @@ class ObjectTrackerOutputGenerator(OutputGenerator):
             API = cmdinfo.elem.attrib.get('name').replace('vk', dispatch_table, 1)
             # Put all this together for the final down-chain call
             if assignresult != '':
-                self.appendSection('command', '    if (skip) return VK_ERROR_VALIDATION_FAILED_EXT;')
+                if resulttype.text == 'VkResult':
+                    self.appendSection('command', '    if (skip) return VK_ERROR_VALIDATION_FAILED_EXT;')
+                elif resulttype.text == 'VkBool32':
+                    self.appendSection('command', '    if (skip) return VK_FALSE;')
+                else:
+                    raise Exception('Unknown result type ' + resulttype.text)
             else:
                 self.appendSection('command', '    if (skip) return;')
             self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')

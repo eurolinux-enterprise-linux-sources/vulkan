@@ -21,6 +21,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_definitions(-DVK_USE_PLATFORM_MIR_KHR -DVK_USE_PLATFORM_MIR_KHX)
         include_directories(${MIR_INCLUDE_DIR})
     endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_definitions(-DVK_USE_PLATFORM_MACOS_MVK)
+    if(CMAKE_GENERATOR MATCHES "^Xcode.*")
+        add_custom_target(mk_layer_config_dir ALL COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>)
+    endif()
 else()
     message(FATAL_ERROR "Unsupported Platform!")
 endif()
@@ -40,7 +45,6 @@ set(LAYER_JSON_FILES_NO_DEPENDENCIES
 set(LAYER_JSON_FILES ${LAYER_JSON_FILES_WITH_DEPENDENCIES} ${LAYER_JSON_FILES_NO_DEPENDENCIES})
 
 if (WIN32)
-    if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR))
         if (CMAKE_GENERATOR MATCHES "^Visual Studio.*")
             foreach (config_file ${LAYER_JSON_FILES})
                 FILE(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/windows/${config_file}.json src_json)
@@ -49,6 +53,7 @@ if (WIN32)
                     COMMAND copy ${src_json} ${dst_json}
                     VERBATIM
                     )
+                set_target_properties(${config_file}-json PROPERTIES FOLDER ${LVL_TARGET_FOLDER})
             endforeach(config_file)
         else()
             foreach (config_file ${LAYER_JSON_FILES})
@@ -60,6 +65,7 @@ if (WIN32)
                     )
             endforeach(config_file)
         endif()
+    if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR))
         # Copy vk_validation_error_messages.h from source to build dir for scripts to pick up
         FILE(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/vk_validation_error_messages.h src_val_msgs)
         FILE(TO_NATIVE_PATH ${CMAKE_CURRENT_BINARY_DIR}/vk_validation_error_messages.h dst_val_msgs)
@@ -67,8 +73,9 @@ if (WIN32)
             COMMAND copy ${src_val_msgs} ${dst_val_msgs}
             VERBATIM
             )
+        set_target_properties(vk_validation_error_messages PROPERTIES FOLDER ${LVL_TARGET_FOLDER})
     endif()
-else()
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     # extra setup for out-of-tree builds
     if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR))
         foreach (config_file ${LAYER_JSON_FILES})
@@ -83,18 +90,42 @@ else()
             VERBATIM
             )
     endif()
+elseif(APPLE)
+    # extra setup for out-of-tree builds
+    if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR))
+        if (CMAKE_GENERATOR MATCHES "^Xcode.*")
+            foreach (config_file ${LAYER_JSON_FILES})
+                add_custom_target(${config_file}-json ALL
+                    DEPENDS mk_layer_config_dir
+                    COMMAND ln -sf ${CMAKE_CURRENT_SOURCE_DIR}/macos/${config_file}.json $<CONFIG>
+                    VERBATIM
+                    )
+            endforeach(config_file)
+        else()
+            foreach (config_file ${LAYER_JSON_FILES})
+                add_custom_target(${config_file}-json ALL
+                    COMMAND ln -sf ${CMAKE_CURRENT_SOURCE_DIR}/macos/${config_file}.json
+                    VERBATIM
+                    )
+            endforeach(config_file)
+        endif()
+        # Add link to vk_validation_error_messages.h in build dir for scripts to pick up
+        add_custom_target(vk_validation_error_messages ALL
+            COMMAND ln -sf ${CMAKE_CURRENT_SOURCE_DIR}/vk_validation_error_messages.h
+            VERBATIM
+            )
+    endif()
 endif()
-# If a layer has a direcgt dependency on a project with the same name, use it.
-foreach (config_file ${LAYER_JSON_FILES_WITH_DEPENDENCIES})
-    add_dependencies(${config_file}-json ${config_file})
-endforeach(config_file)
-# If a layer has no direct dependencies, give it one so it copies in the proper order
-foreach (config_file ${LAYER_JSON_FILES_NO_DEPENDENCIES})
-    add_dependencies(${config_file}-json VkLayer_utils)
-endforeach(config_file)
-
-
-
+# If a layer has a direct dependency on a project with the same name, use it.
+if ((Win32) OR (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)))
+    foreach (config_file ${LAYER_JSON_FILES_WITH_DEPENDENCIES})
+        add_dependencies(${config_file}-json ${config_file})
+    endforeach(config_file)
+    # If a layer has no direct dependencies, give it one so it copies in the proper order
+    foreach (config_file ${LAYER_JSON_FILES_NO_DEPENDENCIES})
+        add_dependencies(${config_file}-json VkLayer_utils)
+    endforeach(config_file)
+endif()
 
 # Add targets for JSON file install on Linux.
 # Need to remove the "./" from the library path before installing to /etc.
@@ -120,10 +151,22 @@ if (WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DEF_FILE} VkLayer_${target}.def
         VERBATIM
     )
+    set_target_properties(copy-${target}-def-file PROPERTIES FOLDER ${LVL_TARGET_FOLDER})
     add_library(VkLayer_${target} SHARED ${ARGN} VkLayer_${target}.def)
     add_dependencies(VkLayer_${target} generate_helper_files)
     target_link_Libraries(VkLayer_${target} VkLayer_utils)
     add_dependencies(VkLayer_${target} generate_helper_files VkLayer_utils)
+    endmacro()
+elseif(APPLE)
+    macro(add_vk_layer target)
+    add_library(VkLayer_${target} SHARED ${ARGN})
+    target_link_Libraries(VkLayer_${target} VkLayer_utils)
+    add_dependencies(VkLayer_${target} generate_helper_files VkLayer_utils)
+    set_target_properties(VkLayer_${target} PROPERTIES 
+        LINK_FLAGS "-Wl"
+        INSTALL_RPATH "@loader_path/"
+    ) 
+    install(TARGETS VkLayer_${target} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
     endmacro()
 else()
     macro(add_vk_layer target)
@@ -142,17 +185,16 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../loader
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/vulkan
     ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_PROJECT_BINARY_DIR}
+    ${PROJECT_BINARY_DIR}
     ${CMAKE_BINARY_DIR}
 )
 
 if (WIN32)
-    set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -D_CRT_SECURE_NO_WARNINGS")
-    set (CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE} -D_CRT_SECURE_NO_WARNINGS")
-    set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -D_CRT_SECURE_NO_WARNINGS")
-    set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -D_CRT_SECURE_NO_WARNINGS")
-    set (CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG} -D_CRT_SECURE_NO_WARNINGS /bigobj")
-    set (CMAKE_C_FLAGS_DEBUG     "${CMAKE_C_FLAGS_DEBUG} -D_CRT_SECURE_NO_WARNINGS /bigobj")
+    # Applies to all configurations
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    # Avoid: fatal error C1128: number of sections exceeded object file format limit: compile with /bigobj
+    set_source_files_properties(core_validation.cpp threading.cpp
+        PROPERTIES COMPILE_FLAGS "/bigobj")
     # Turn off transitional "changed behavior" warning message for Visual Studio versions prior to 2015.
     # The changed behavior is that constructor initializers are now fixed to clear the struct members.
     add_compile_options("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,19>>:/wd4351>")
@@ -161,10 +203,12 @@ else()
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith -Wno-unused-function -Wno-sign-compare")
 endif()
 
-if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "mips64")
-    if("${CMAKE_SIZEOF_VOID_P}" EQUAL "8")
-        set_source_files_properties(core_validation.cpp PROPERTIES COMPILE_FLAGS -mxgot)
-    endif()
+# Clang (and not gcc) warns about unused const variables.
+# Generated files may purposely contain unused consts, so
+# silence this warning in Clang. 
+if (CMAKE_C_COMPILER_ID MATCHES "Clang")
+   set_source_files_properties(parameter_validation.cpp PROPERTIES
+        COMPILE_FLAGS "-Wno-unused-const-variable")
 endif()
 
 run_vk_xml_generate(threading_generator.py thread_check.h)
@@ -173,20 +217,7 @@ run_vk_xml_generate(unique_objects_generator.py unique_objects_wrappers.h)
 run_vk_xml_generate(dispatch_table_helper_generator.py vk_dispatch_table_helper.h)
 run_vk_xml_generate(object_tracker_generator.py object_tracker.cpp)
 
-# Layer Utils Library
-# For Windows, we use a static lib because the Windows loader has a fairly restrictive loader search
-# path that can't be easily modified to point it to the same directory that contains the layers.
-if (WIN32)
-    add_library(VkLayer_utils STATIC vk_layer_config.cpp vk_layer_extension_utils.cpp vk_layer_utils.cpp vk_format_utils.cpp)
-else()
-    add_library(VkLayer_utils SHARED vk_layer_config.cpp vk_layer_extension_utils.cpp vk_layer_utils.cpp vk_format_utils.cpp)
-    if(INSTALL_LVL_FILES)
-        install(TARGETS VkLayer_utils DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    endif()
-endif()
-add_dependencies(VkLayer_utils generate_helper_files)
-
-add_vk_layer(core_validation core_validation.cpp vk_layer_table.cpp descriptor_sets.cpp buffer_validation.cpp shader_validation.cpp)
+add_vk_layer(core_validation core_validation.cpp vk_layer_table.cpp descriptor_sets.cpp buffer_validation.cpp shader_validation.cpp xxhash.c)
 add_vk_layer(object_tracker object_tracker.cpp object_tracker_utils.cpp vk_layer_table.cpp)
 # generated
 add_vk_layer(threading threading.cpp thread_check.h vk_layer_table.cpp)

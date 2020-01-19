@@ -19,11 +19,13 @@
 #
 # Author: Mark Lobodzinski <mark@lunarg.com>
 # Author: Tobin Ehlis <tobine@google.com>
+# Author: John Zulauf <jzulauf@lunarg.com>
 
 import os,re,sys
 import xml.etree.ElementTree as etree
 from generator import *
 from collections import namedtuple
+from common_codegen import *
 
 #
 # HelperFileOutputGeneratorOptions - subclass of GeneratorOptions.
@@ -38,28 +40,26 @@ class HelperFileOutputGeneratorOptions(GeneratorOptions):
                  defaultExtensions = None,
                  addExtensions = None,
                  removeExtensions = None,
+                 emitExtensions = None,
                  sortProcedure = regSortFeatures,
                  prefixText = "",
                  genFuncPointers = True,
                  protectFile = True,
                  protectFeature = True,
-                 protectProto = None,
-                 protectProtoStr = None,
                  apicall = '',
                  apientry = '',
                  apientryp = '',
                  alignFuncParam = 0,
                  library_name = '',
+                 expandEnumerants = True,
                  helper_file_type = ''):
         GeneratorOptions.__init__(self, filename, directory, apiname, profile,
                                   versions, emitversions, defaultExtensions,
-                                  addExtensions, removeExtensions, sortProcedure)
+                                  addExtensions, removeExtensions, emitExtensions, sortProcedure)
         self.prefixText       = prefixText
         self.genFuncPointers  = genFuncPointers
         self.protectFile      = protectFile
         self.protectFeature   = protectFeature
-        self.protectProto     = protectProto
-        self.protectProtoStr  = protectProtoStr
         self.apicall          = apicall
         self.apientry         = apientry
         self.apientryp        = apientryp
@@ -77,13 +77,12 @@ class HelperFileOutputGenerator(OutputGenerator):
         OutputGenerator.__init__(self, errFile, warnFile, diagFile)
         # Internal state - accumulators for different inner block text
         self.enum_output = ''                             # string built up of enum string routines
-        self.struct_size_h_output = ''                    # string built up of struct size header output
-        self.struct_size_c_output = ''                    # string built up of struct size source output
         # Internal state - accumulators for different inner block text
         self.structNames = []                             # List of Vulkan struct typenames
         self.structTypes = dict()                         # Map of Vulkan struct typename to required VkStructureType
         self.structMembers = []                           # List of StructMemberData records for all Vulkan structs
         self.object_types = []                            # List of all handle types
+        self.object_type_aliases = []                     # Aliases to handles types (for handles that were extensions)
         self.debug_report_object_types = []               # Handy copy of debug_report_object_type enum data
         self.core_object_types = []                       # Handy copy of core_object_type enum data
         self.device_extension_info = dict()               # Dict of device extension name defines and ifdef values
@@ -93,6 +92,15 @@ class HelperFileOutputGenerator(OutputGenerator):
         self.StructType = namedtuple('StructType', ['name', 'value'])
         self.CommandParam = namedtuple('CommandParam', ['type', 'name', 'ispointer', 'isstaticarray', 'isconst', 'iscount', 'len', 'extstructs', 'cdecl'])
         self.StructMemberData = namedtuple('StructMemberData', ['name', 'members', 'ifdef_protect'])
+
+        self.custom_construct_params = {
+            # safe_VkGraphicsPipelineCreateInfo needs to know if subpass has color and\or depth\stencil attachments to use its pointers
+            'VkGraphicsPipelineCreateInfo' :
+                ', const bool uses_color_attachment, const bool uses_depthstencil_attachment',
+            # safe_VkPipelineViewportStateCreateInfo needs to know if viewport and scissor is dynamic to use its pointers
+            'VkPipelineViewportStateCreateInfo' :
+                ', const bool is_dynamic_viewports, const bool is_dynamic_scissors',
+        }
     #
     # Called once at the beginning of each run
     def beginFile(self, genOpts):
@@ -130,6 +138,7 @@ class HelperFileOutputGenerator(OutputGenerator):
         copyright += ' * Author: Courtney Goeltzenleuchter <courtneygo@google.com>\n'
         copyright += ' * Author: Tobin Ehlis <tobine@google.com>\n'
         copyright += ' * Author: Chris Forbes <chrisforbes@google.com>\n'
+        copyright += ' * Author: John Zulauf<jzulauf@lunarg.com>\n'
         copyright += ' *\n'
         copyright += ' ****************************************************************************/\n'
         write(copyright, file=self.outFile)
@@ -149,7 +158,9 @@ class HelperFileOutputGenerator(OutputGenerator):
     def beginFeature(self, interface, emit):
         # Start processing in superclass
         OutputGenerator.beginFeature(self, interface, emit)
-        if self.featureName == 'VK_VERSION_1_0':
+        self.featureExtraProtect = GetFeatureProtect(interface)
+
+        if self.featureName == 'VK_VERSION_1_0' or self.featureName == 'VK_VERSION_1_1':
             return
         nameElem = interface[0][1]
         name = nameElem.get('name')
@@ -166,18 +177,16 @@ class HelperFileOutputGenerator(OutputGenerator):
         OutputGenerator.endFeature(self)
     #
     # Grab group (e.g. C "enum" type) info to output for enum-string conversion helper
-    def genGroup(self, groupinfo, groupName):
-        OutputGenerator.genGroup(self, groupinfo, groupName)
+    def genGroup(self, groupinfo, groupName, alias):
+        OutputGenerator.genGroup(self, groupinfo, groupName, alias)
         groupElem = groupinfo.elem
         # For enum_string_header
         if self.helper_file_type == 'enum_string_header':
-            value_list = []
+            value_set = set()
             for elem in groupElem.findall('enum'):
-                if elem.get('supported') != 'disabled':
-                    item_name = elem.get('name')
-                    value_list.append(item_name)
-            if value_list is not None:
-                self.enum_output += self.GenerateEnumStringConversion(groupName, value_list)
+                if elem.get('supported') != 'disabled' and elem.get('alias') == None:
+                    value_set.add(elem.get('name'))
+            self.enum_output += self.GenerateEnumStringConversion(groupName, value_set)
         elif self.helper_file_type == 'object_types_header':
             if groupName == 'VkDebugReportObjectTypeEXT':
                 for elem in groupElem.findall('enum'):
@@ -192,17 +201,20 @@ class HelperFileOutputGenerator(OutputGenerator):
 
     #
     # Called for each type -- if the type is a struct/union, grab the metadata
-    def genType(self, typeinfo, name):
-        OutputGenerator.genType(self, typeinfo, name)
+    def genType(self, typeinfo, name, alias):
+        OutputGenerator.genType(self, typeinfo, name, alias)
         typeElem = typeinfo.elem
         # If the type is a struct type, traverse the imbedded <member> tags generating a structure.
         # Otherwise, emit the tag text.
         category = typeElem.get('category')
         if category == 'handle':
-            self.object_types.append(name)
+            if alias:
+                self.object_type_aliases.append((name,alias))
+            else:
+                self.object_types.append(name)
         elif (category == 'struct' or category == 'union'):
             self.structNames.append(name)
-            self.genStruct(typeinfo, name)
+            self.genStruct(typeinfo, name, alias)
     #
     # Generate a VkStructureType based on a structure typename
     def genVkStructureType(self, typename):
@@ -306,8 +318,8 @@ class HelperFileOutputGenerator(OutputGenerator):
         return False
     #
     # Generate local ready-access data describing Vulkan structures and unions from the XML metadata
-    def genStruct(self, typeinfo, typeName):
-        OutputGenerator.genStruct(self, typeinfo, typeName)
+    def genStruct(self, typeinfo, typeName, alias):
+        OutputGenerator.genStruct(self, typeinfo, typeName, alias)
         members = typeinfo.elem.findall('.//member')
         # Iterate over members once to get length parameters for arrays
         lens = set()
@@ -372,7 +384,7 @@ class HelperFileOutputGenerator(OutputGenerator):
                 pdev_members = members
                 break
         deindex = '\n'
-        deindex += 'static const char * GetPhysDevFeatureString(uint32_t index) {\n'
+        deindex += 'static inline const char * GetPhysDevFeatureString(uint32_t index) {\n'
         deindex += '    const char * IndexToPhysDevFeatureString[] = {\n'
         for feature in pdev_members:
             deindex += '        "%s",\n' % feature.name
@@ -395,136 +407,12 @@ class HelperFileOutputGenerator(OutputGenerator):
             enum_string_helper_header += self.DeIndexPhysDevFeatures()
             return enum_string_helper_header
     #
-    # struct_size_header: build function prototypes for header file
-    def GenerateStructSizeHeader(self):
-        outstring = ''
-        outstring += 'size_t get_struct_chain_size(const void* struct_ptr);\n'
-        for item in self.structMembers:
-            lower_case_name = item.name.lower()
-            if item.ifdef_protect != None:
-                outstring += '#ifdef %s\n' % item.ifdef_protect
-            outstring += 'size_t vk_size_%s(const %s* struct_ptr);\n' % (item.name.lower(), item.name)
-            if item.ifdef_protect != None:
-                outstring += '#endif // %s\n' % item.ifdef_protect
-        outstring += '#ifdef __cplusplus\n'
-        outstring += '}\n'
-        outstring += '#endif'
-        return outstring
-    #
-    # Combine struct size helper header file preamble with body text and return
-    def GenerateStructSizeHelperHeader(self):
-        struct_size_helper_header = '\n'
-        struct_size_helper_header += '#ifdef __cplusplus\n'
-        struct_size_helper_header += 'extern "C" {\n'
-        struct_size_helper_header += '#endif\n'
-        struct_size_helper_header += '\n'
-        struct_size_helper_header += '#include <stdio.h>\n'
-        struct_size_helper_header += '#include <stdlib.h>\n'
-        struct_size_helper_header += '#include <vulkan/vulkan.h>\n'
-        struct_size_helper_header += '\n'
-        struct_size_helper_header += '// Function Prototypes\n'
-        struct_size_helper_header += self.GenerateStructSizeHeader()
-        return struct_size_helper_header
-    #
     # Helper function for declaring a counter variable only once
     def DeclareCounter(self, string_var, declare_flag):
         if declare_flag == False:
             string_var += '        uint32_t i = 0;\n'
             declare_flag = True
         return string_var, declare_flag
-    #
-    # Build the header of the get_struct_chain_size function
-    def GenerateChainSizePreamble(self):
-        preable = '\nsize_t get_struct_chain_size(const void* struct_ptr) {\n'
-        preable += '    // Use VkApplicationInfo as struct until actual type is resolved\n'
-        preable += '    VkApplicationInfo* pNext = (VkApplicationInfo*)struct_ptr;\n'
-        preable += '    size_t struct_size = 0;\n'
-        preable += '    while (pNext) {\n'
-        preable += '        switch (pNext->sType) {\n'
-        return preable
-    #
-    # Build the footer of the get_struct_chain_size function
-    def GenerateChainSizePostamble(self):
-        postamble  = '            default:\n'
-        postamble += '                assert(0);\n'
-        postamble += '                struct_size += 0;\n'
-        postamble += '        }\n'
-        postamble += '        pNext = (VkApplicationInfo*)pNext->pNext;\n'
-        postamble += '    }\n'
-        postamble += '    return struct_size;\n'
-        postamble += '}'
-        return postamble
-    #
-    # struct_size_helper source -- create bodies of struct size helper functions
-    def GenerateStructSizeSource(self):
-        # Construct the body of the routine and get_struct_chain_size() simultaneously
-        struct_size_body = ''
-        chain_size  = self.GenerateChainSizePreamble()
-        for item in self.structMembers:
-            struct_size_body += '\n'
-            lower_case_name = item.name.lower()
-            if item.ifdef_protect != None:
-                struct_size_body += '#ifdef %s\n' % item.ifdef_protect
-                chain_size += '#ifdef %s\n' % item.ifdef_protect
-            if item.name in self.structTypes:
-                chain_size += '            case %s: {\n' % self.structTypes[item.name].value
-                chain_size += '                struct_size += vk_size_%s((%s*)pNext);\n' % (item.name.lower(), item.name)
-                chain_size += '                break;\n'
-                chain_size += '            }\n'
-            struct_size_body += 'size_t vk_size_%s(const %s* struct_ptr) {\n' % (item.name.lower(), item.name)
-            struct_size_body += '    size_t struct_size = 0;\n'
-            struct_size_body += '    if (struct_ptr) {\n'
-            struct_size_body += '        struct_size = sizeof(%s);\n' % item.name
-            counter_declared = False
-            for member in item.members:
-                vulkan_type = next((i for i, v in enumerate(self.structMembers) if v[0] == member.type), None)
-                if member.ispointer == True:
-                    if vulkan_type is not None:
-                        # If this is another Vulkan structure call generated size function
-                        if member.len is not None:
-                            struct_size_body, counter_declared = self.DeclareCounter(struct_size_body, counter_declared)
-                            struct_size_body += '        for (i = 0; i < struct_ptr->%s; i++) {\n' % member.len
-                            struct_size_body += '            struct_size += vk_size_%s(&struct_ptr->%s[i]);\n' % (member.type.lower(), member.name)
-                            struct_size_body += '        }\n'
-                        else:
-                            struct_size_body += '        struct_size += vk_size_%s(struct_ptr->%s);\n' % (member.type.lower(), member.name)
-                    else:
-                        if member.type == 'char':
-                            # Deal with sizes of character strings
-                            if member.len is not None:
-                                struct_size_body, counter_declared = self.DeclareCounter(struct_size_body, counter_declared)
-                                struct_size_body += '        for (i = 0; i < struct_ptr->%s; i++) {\n' % member.len
-                                struct_size_body += '            struct_size += (sizeof(char*) + (sizeof(char) * (1 + strlen(struct_ptr->%s[i]))));\n' % (member.name)
-                                struct_size_body += '        }\n'
-                            else:
-                                struct_size_body += '        struct_size += (struct_ptr->%s != NULL) ? sizeof(char)*(1+strlen(struct_ptr->%s)) : 0;\n' % (member.name, member.name)
-                        else:
-                            if member.len is not None:
-                                # Avoid using 'sizeof(void)', which generates compile-time warnings/errors
-                                checked_type = member.type
-                                if checked_type == 'void':
-                                    checked_type = 'void*'
-                                struct_size_body += '        struct_size += (struct_ptr->%s ) * sizeof(%s);\n' % (member.len, checked_type)
-            struct_size_body += '    }\n'
-            struct_size_body += '    return struct_size;\n'
-            struct_size_body += '}\n'
-            if item.ifdef_protect != None:
-                struct_size_body += '#endif // %s\n' % item.ifdef_protect
-                chain_size += '#endif // %s\n' % item.ifdef_protect
-        chain_size += self.GenerateChainSizePostamble()
-        struct_size_body += chain_size;
-        return struct_size_body
-    #
-    # Combine struct size helper source file preamble with body text and return
-    def GenerateStructSizeHelperSource(self):
-        struct_size_helper_source = '\n'
-        struct_size_helper_source += '#include "vk_struct_size_helper.h"\n'
-        struct_size_helper_source += '#include <string.h>\n'
-        struct_size_helper_source += '#include <assert.h>\n'
-        struct_size_helper_source += '\n'
-        struct_size_helper_source += '// Function Definitions\n'
-        struct_size_helper_source += self.GenerateStructSizeSource()
-        return struct_size_helper_source
     #
     # Combine safe struct helper header file preamble with body text and return
     def GenerateSafeStructHelperHeader(self):
@@ -557,12 +445,13 @@ class HelperFileOutputGenerator(OutputGenerator):
                             safe_struct_header += '    %s* %s;\n' % (member.type, member.name)
                     else:
                         safe_struct_header += '%s;\n' % member.cdecl
-                safe_struct_header += '    safe_%s(const %s* in_struct);\n' % (item.name, item.name)
+                safe_struct_header += '    safe_%s(const %s* in_struct%s);\n' % (item.name, item.name, self.custom_construct_params.get(item.name, ''))
                 safe_struct_header += '    safe_%s(const safe_%s& src);\n' % (item.name, item.name)
+                safe_struct_header += '    safe_%s& operator=(const safe_%s& src);\n' % (item.name, item.name)
                 safe_struct_header += '    safe_%s();\n' % item.name
                 safe_struct_header += '    ~safe_%s();\n' % item.name
-                safe_struct_header += '    void initialize(const %s* in_struct);\n' % item.name
-                safe_struct_header += '    void initialize(const safe_%s* src);\n' % item.name
+                safe_struct_header += '    void initialize(const %s* in_struct%s);\n' % (item.name, self.custom_construct_params.get(item.name, ''))
+                safe_struct_header += '    void initialize(const safe_%s* src);\n' % (item.name)
                 safe_struct_header += '    %s *ptr() { return reinterpret_cast<%s *>(this); }\n' % (item.name, item.name)
                 safe_struct_header += '    %s const *ptr() const { return reinterpret_cast<%s const *>(this); }\n' % (item.name, item.name)
                 safe_struct_header += '};\n'
@@ -572,6 +461,33 @@ class HelperFileOutputGenerator(OutputGenerator):
     #
     # Generate extension helper header file
     def GenerateExtensionHelperHeader(self):
+
+        V_1_0_instance_extensions_promoted_to_core = [
+            'vk_khr_device_group_creation',
+            'vk_khr_external_memory_capabilities',
+            'vk_khr_external_fence_capabilities',
+            'vk_khr_external_semaphore_capabilities',
+            'vk_khr_get_physical_device_properties_2',
+            ]
+
+        V_1_0_device_extensions_promoted_to_core = [
+            'vk_khr_bind_memory_2',
+            'vk_khr_device_group',
+            'vk_khr_descriptor_update_template',
+            'vk_khr_sampler_ycbcr_conversion',
+            'vk_khr_get_memory_requirements_2',
+            'vk_khr_maintenance3',
+            'vk_khr_maintenance1',
+            'vk_khr_multiview',
+            'vk_khr_external_memory',
+            'vk_khr_external_semaphore',
+            'vk_khr_16bit_storage',
+            'vk_khr_external_fence',
+            'vk_khr_maintenance2',
+            'vk_khr_variable_pointers',
+            'vk_khr_dedicated_allocation',
+            ]
+
         extension_helper_header = '\n'
         extension_helper_header += '#ifndef VK_EXTENSION_HELPER_H_\n'
         extension_helper_header += '#define VK_EXTENSION_HELPER_H_\n'
@@ -580,13 +496,17 @@ class HelperFileOutputGenerator(OutputGenerator):
         extension_helper_header += '#include <string.h>\n'
         extension_helper_header += '#include <utility>\n'
         extension_helper_header += '\n'
+        extension_helper_header += '\n'
         extension_dict = dict()
+        promoted_ext_list = []
         for type in ['Instance', 'Device']:
             if type == 'Instance':
                 extension_dict = self.instance_extension_info
+                promoted_ext_list = V_1_0_instance_extensions_promoted_to_core
                 struct += 'struct InstanceExtensions { \n'
             else:
                 extension_dict = self.device_extension_info
+                promoted_ext_list = V_1_0_device_extensions_promoted_to_core
                 struct += 'struct DeviceExtensions : public InstanceExtensions { \n'
             for ext_name, ifdef in extension_dict.items():
                 bool_name = ext_name.lower()
@@ -594,9 +514,21 @@ class HelperFileOutputGenerator(OutputGenerator):
                 struct += '    bool %s{false};\n' % bool_name
             struct += '\n'
             if type == 'Instance':
-                struct += '    void InitFromInstanceCreateInfo(const VkInstanceCreateInfo *pCreateInfo) {\n'
+                struct += '    uint32_t NormalizeApiVersion(uint32_t specified_version) {\n'
+                struct += '        uint32_t api_version = (specified_version < VK_API_VERSION_1_1) ? VK_API_VERSION_1_0 : VK_API_VERSION_1_1;\n'
+                struct += '        return api_version;\n'
+                struct += '    }\n'
+                struct += '\n'
+
+                struct += '    uint32_t InitFromInstanceCreateInfo(uint32_t requested_api_version, const VkInstanceCreateInfo *pCreateInfo) {\n'
             else:
-                struct += '    void InitFromDeviceCreateInfo(const InstanceExtensions *instance_extensions, const VkDeviceCreateInfo *pCreateInfo) {\n'
+                struct += '    uint32_t InitFromDeviceCreateInfo(const InstanceExtensions *instance_extensions, uint32_t requested_api_version, const VkDeviceCreateInfo *pCreateInfo) {\n'
+            struct += '\n'
+
+            struct += '        static const std::vector<const char *> V_1_0_promoted_%s_extensions = {\n' % type.lower()
+            for ext_name in promoted_ext_list:
+                struct += '            %s_EXTENSION_NAME,\n' % ext_name.upper()
+            struct += '        };\n'
             struct += '\n'
             struct += '        static const std::pair<char const *, bool %sExtensions::*> known_extensions[]{\n' % type
             for ext_name, ifdef in extension_dict.items():
@@ -610,6 +542,7 @@ class HelperFileOutputGenerator(OutputGenerator):
             struct += '        };\n'
             struct += '\n'
             struct += '        // Initialize struct data\n'
+
             for ext_name, ifdef in self.instance_extension_info.items():
                 bool_name = ext_name.lower()
                 bool_name = re.sub('_extension_name', '', bool_name)
@@ -624,9 +557,30 @@ class HelperFileOutputGenerator(OutputGenerator):
             struct += '                }\n'
             struct += '            }\n'
             struct += '        }\n'
+            struct += '        uint32_t api_version = NormalizeApiVersion(requested_api_version);\n'
+            struct += '        if (api_version >= VK_API_VERSION_1_1) {\n'
+            struct += '            for (auto promoted_ext : V_1_0_promoted_%s_extensions) {\n' % type.lower()
+            struct += '                for (auto ext : known_extensions) {\n'
+            struct += '                    if (!strcmp(ext.first, promoted_ext)) {\n'
+            struct += '                        this->*(ext.second) = true;\n'
+            struct += '                        break;\n'
+            struct += '                    }\n'
+            struct += '                }\n'
+            struct += '            }\n'
+            struct += '        }\n'
+            struct += '        return api_version;\n'
             struct += '    }\n'
             struct += '};\n'
             struct += '\n'
+            # Output reference lists of instance/device extension names
+            struct += 'static const char * const k%sExtensionNames = \n' % type
+            for ext_name, ifdef in extension_dict.items():
+                if ifdef is not None:
+                    struct += '#ifdef %s\n' % ifdef
+                struct += '    %s\n' % ext_name
+                if ifdef is not None:
+                    struct += '#endif\n'
+            struct += ';\n\n'
         extension_helper_header += struct
         extension_helper_header += '\n'
         extension_helper_header += '#endif // VK_EXTENSION_HELPER_H_\n'
@@ -643,21 +597,28 @@ class HelperFileOutputGenerator(OutputGenerator):
     #
     # Object types header: create object enum type header file
     def GenerateObjectTypesHeader(self):
-        object_types_header = '// Object Type enum for validation layer internal object handling\n'
+        object_types_header = ''
+        object_types_header += '// Object Type enum for validation layer internal object handling\n'
         object_types_header += 'typedef enum VulkanObjectType {\n'
         object_types_header += '    kVulkanObjectTypeUnknown = 0,\n'
         enum_num = 1
         type_list = [];
+        enum_entry_map = {}
 
         # Output enum definition as each handle is processed, saving the names to use for the conversion routine
         for item in self.object_types:
             fixup_name = item[2:]
             enum_entry = 'kVulkanObjectType%s' % fixup_name
+            enum_entry_map[item] = enum_entry
             object_types_header += '    ' + enum_entry
             object_types_header += ' = %d,\n' % enum_num
             enum_num += 1
             type_list.append(enum_entry)
         object_types_header += '    kVulkanObjectTypeMax = %d,\n' % enum_num
+        object_types_header += '    // Aliases for backwards compatibilty of "promoted" types\n'
+        for (name, alias) in self.object_type_aliases:
+            fixup_name = name[2:]
+            object_types_header += '    kVulkanObjectType{} = {},\n'.format(fixup_name, enum_entry_map[alias])
         object_types_header += '} VulkanObjectType;\n\n'
 
         # Output name string helper
@@ -669,43 +630,79 @@ class HelperFileOutputGenerator(OutputGenerator):
             object_types_header += '    "%s",\n' % fixup_name
         object_types_header += '};\n'
 
+        # Key creation helper for map comprehensions that convert between k<Name> and VK<Name> symbols
+        def to_key(regex, raw_key): return re.search(regex, raw_key).group(1).lower().replace("_","")
+
         # Output a conversion routine from the layer object definitions to the debug report definitions
+        # As the VK_DEBUG_REPORT types are not being updated, specify UNKNOWN for unmatched types
         object_types_header += '\n'
         object_types_header += '// Helper array to get Vulkan VK_EXT_debug_report object type enum from the internal layers version\n'
         object_types_header += 'const VkDebugReportObjectTypeEXT get_debug_report_enum[] = {\n'
+        object_types_header += '    VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, // kVulkanObjectTypeUnknown\n'
+
+        dbg_re = '^VK_DEBUG_REPORT_OBJECT_TYPE_(.*)_EXT$'
+        dbg_map = {to_key(dbg_re, dbg) : dbg for dbg in self.debug_report_object_types}
+        dbg_default = 'VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT'
         for object_type in type_list:
-            done = False
-            search_type = object_type.replace("kVulkanObjectType", "").lower()
-            for vk_object_type in self.debug_report_object_types:
-                target_type = vk_object_type.replace("VK_DEBUG_REPORT_OBJECT_TYPE_", "").lower()
-                target_type = target_type[:-4]
-                target_type = target_type.replace("_", "")
-                if search_type == target_type:
-                    object_types_header += '    %s,   // %s\n' % (vk_object_type, object_type)
-                    done = True
-                    break
-            if done == False:
-                object_types_header += '    VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, // No Match\n'
+            vk_object_type = dbg_map.get(object_type.replace("kVulkanObjectType", "").lower(), dbg_default)
+            object_types_header += '    %s,   // %s\n' % (vk_object_type, object_type)
         object_types_header += '};\n'
 
         # Output a conversion routine from the layer object definitions to the core object type definitions
+        # This will intentionally *fail* for unmatched types as the VK_OBJECT_TYPE list should match the kVulkanObjectType list
         object_types_header += '\n'
         object_types_header += '// Helper array to get Official Vulkan VkObjectType enum from the internal layers version\n'
         object_types_header += 'const VkObjectType get_object_type_enum[] = {\n'
+        object_types_header += '    VK_OBJECT_TYPE_UNKNOWN, // kVulkanObjectTypeUnknown\n'
+
+        vko_re = '^VK_OBJECT_TYPE_(.*)'
+        vko_map = {to_key(vko_re, vko) : vko for vko in self.core_object_types}
         for object_type in type_list:
-            done = False
-            search_type = object_type.replace("kVulkanObjectType", "").lower()
-            for vk_object_type in self.core_object_types:
-                target_type = vk_object_type.replace("VK_OBJECT_TYPE_", "").lower()
-                target_type = target_type.replace("_", "")
-                if search_type == target_type:
-                    object_types_header += '    %s,   // %s\n' % (vk_object_type, object_type)
-                    done = True
-                    break
-            if done == False:
-                object_types_header += '    VK_OBJECT_TYPE_UNKNOWN, // No Match\n'
+            vk_object_type = vko_map[object_type.replace("kVulkanObjectType", "").lower()]
+            object_types_header += '    %s,   // %s\n' % (vk_object_type, object_type)
         object_types_header += '};\n'
 
+        # Create a function to convert from VkDebugReportObjectTypeEXT to VkObjectType
+        object_types_header += '\n'
+        object_types_header += '// Helper function to convert from VkDebugReportObjectTypeEXT to VkObjectType\n'
+        object_types_header += 'static inline VkObjectType convertDebugReportObjectToCoreObject(VkDebugReportObjectTypeEXT debug_report_obj){\n'
+        object_types_header += '    if (debug_report_obj == VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT) {\n'
+        object_types_header += '        return VK_OBJECT_TYPE_UNKNOWN;\n'
+        for core_object_type in self.core_object_types:
+            core_target_type = core_object_type.replace("VK_OBJECT_TYPE_", "").lower()
+            core_target_type = core_target_type.replace("_", "")
+            for dr_object_type in self.debug_report_object_types:
+                dr_target_type = dr_object_type.replace("VK_DEBUG_REPORT_OBJECT_TYPE_", "").lower()
+                dr_target_type = dr_target_type[:-4]
+                dr_target_type = dr_target_type.replace("_", "")
+                if core_target_type == dr_target_type:
+                    object_types_header += '    } else if (debug_report_obj == %s) {\n' % dr_object_type
+                    object_types_header += '        return %s;\n' % core_object_type
+                    break
+        object_types_header += '    }\n'
+        object_types_header += '    return VK_OBJECT_TYPE_UNKNOWN;\n'
+        object_types_header += '}\n'
+
+        # Create a function to convert from VkObjectType to VkDebugReportObjectTypeEXT
+        object_types_header += '\n'
+        object_types_header += '// Helper function to convert from VkDebugReportObjectTypeEXT to VkObjectType\n'
+        object_types_header += 'static inline VkDebugReportObjectTypeEXT convertCoreObjectToDebugReportObject(VkObjectType core_report_obj){\n'
+        object_types_header += '    if (core_report_obj == VK_OBJECT_TYPE_UNKNOWN) {\n'
+        object_types_header += '        return VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT;\n'
+        for core_object_type in self.core_object_types:
+            core_target_type = core_object_type.replace("VK_OBJECT_TYPE_", "").lower()
+            core_target_type = core_target_type.replace("_", "")
+            for dr_object_type in self.debug_report_object_types:
+                dr_target_type = dr_object_type.replace("VK_DEBUG_REPORT_OBJECT_TYPE_", "").lower()
+                dr_target_type = dr_target_type[:-4]
+                dr_target_type = dr_target_type.replace("_", "")
+                if core_target_type == dr_target_type:
+                    object_types_header += '    } else if (core_report_obj == %s) {\n' % core_object_type
+                    object_types_header += '        return %s;\n' % dr_object_type
+                    break
+        object_types_header += '    }\n'
+        object_types_header += '    return VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT;\n'
+        object_types_header += '}\n'
         return object_types_header
     #
     # Determine if a structure needs a safe_struct helper function
@@ -723,6 +720,12 @@ class HelperFileOutputGenerator(OutputGenerator):
         safe_struct_helper_source = '\n'
         safe_struct_helper_source += '#include "vk_safe_struct.h"\n'
         safe_struct_helper_source += '#include <string.h>\n'
+        safe_struct_helper_source += '#ifdef VK_USE_PLATFORM_ANDROID_KHR\n'
+        safe_struct_helper_source += '#if __ANDROID_API__ < __ANDROID_API_O__\n'
+        safe_struct_helper_source += 'struct AHardwareBuffer {};\n'
+        safe_struct_helper_source += '#endif\n'
+        safe_struct_helper_source += '#endif\n'
+
         safe_struct_helper_source += '\n'
         safe_struct_helper_source += self.GenerateSafeStructSource()
         return safe_struct_helper_source
@@ -750,49 +753,205 @@ class HelperFileOutputGenerator(OutputGenerator):
             init_func_txt = ''      # Txt for initialize() function that takes struct ptr and inits members
             construct_txt = ''      # Body of constuctor as well as body of initialize() func following init_func_txt
             destruct_txt = ''
-            # VkWriteDescriptorSet is special case because pointers may be non-null but ignored
-            custom_construct_txt = {'VkWriteDescriptorSet' :
-                                    '    switch (descriptorType) {\n'
-                                    '        case VK_DESCRIPTOR_TYPE_SAMPLER:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:\n'
-                                    '        if (descriptorCount && in_struct->pImageInfo) {\n'
-                                    '            pImageInfo = new VkDescriptorImageInfo[descriptorCount];\n'
-                                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
-                                    '                pImageInfo[i] = in_struct->pImageInfo[i];\n'
-                                    '            }\n'
-                                    '        }\n'
-                                    '        break;\n'
-                                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:\n'
-                                    '        if (descriptorCount && in_struct->pBufferInfo) {\n'
-                                    '            pBufferInfo = new VkDescriptorBufferInfo[descriptorCount];\n'
-                                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
-                                    '                pBufferInfo[i] = in_struct->pBufferInfo[i];\n'
-                                    '            }\n'
-                                    '        }\n'
-                                    '        break;\n'
-                                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:\n'
-                                    '        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:\n'
-                                    '        if (descriptorCount && in_struct->pTexelBufferView) {\n'
-                                    '            pTexelBufferView = new VkBufferView[descriptorCount];\n'
-                                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
-                                    '                pTexelBufferView[i] = in_struct->pTexelBufferView[i];\n'
-                                    '            }\n'
-                                    '        }\n'
-                                    '        break;\n'
-                                    '        default:\n'
-                                    '        break;\n'
-                                    '    }\n',
-                                    'VkShaderModuleCreateInfo' :
-                                    '    if (in_struct->pCode) {\n'
-                                    '        pCode = reinterpret_cast<uint32_t *>(new uint8_t[codeSize]);\n'
-                                    '        memcpy((void *)pCode, (void *)in_struct->pCode, codeSize);\n'
-                                    '    }\n'}
+
+            custom_construct_txt = {
+                # VkWriteDescriptorSet is special case because pointers may be non-null but ignored
+                'VkWriteDescriptorSet' :
+                    '    switch (descriptorType) {\n'
+                    '        case VK_DESCRIPTOR_TYPE_SAMPLER:\n'
+                    '        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:\n'
+                    '        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:\n'
+                    '        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:\n'
+                    '        case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:\n'
+                    '        if (descriptorCount && in_struct->pImageInfo) {\n'
+                    '            pImageInfo = new VkDescriptorImageInfo[descriptorCount];\n'
+                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
+                    '                pImageInfo[i] = in_struct->pImageInfo[i];\n'
+                    '            }\n'
+                    '        }\n'
+                    '        break;\n'
+                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:\n'
+                    '        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:\n'
+                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:\n'
+                    '        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:\n'
+                    '        if (descriptorCount && in_struct->pBufferInfo) {\n'
+                    '            pBufferInfo = new VkDescriptorBufferInfo[descriptorCount];\n'
+                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
+                    '                pBufferInfo[i] = in_struct->pBufferInfo[i];\n'
+                    '            }\n'
+                    '        }\n'
+                    '        break;\n'
+                    '        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:\n'
+                    '        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:\n'
+                    '        if (descriptorCount && in_struct->pTexelBufferView) {\n'
+                    '            pTexelBufferView = new VkBufferView[descriptorCount];\n'
+                    '            for (uint32_t i=0; i<descriptorCount; ++i) {\n'
+                    '                pTexelBufferView[i] = in_struct->pTexelBufferView[i];\n'
+                    '            }\n'
+                    '        }\n'
+                    '        break;\n'
+                    '        default:\n'
+                    '        break;\n'
+                    '    }\n',
+                'VkShaderModuleCreateInfo' :
+                    '    if (in_struct->pCode) {\n'
+                    '        pCode = reinterpret_cast<uint32_t *>(new uint8_t[codeSize]);\n'
+                    '        memcpy((void *)pCode, (void *)in_struct->pCode, codeSize);\n'
+                    '    }\n',
+                # VkGraphicsPipelineCreateInfo is special case because its pointers may be non-null but ignored
+                'VkGraphicsPipelineCreateInfo' :
+                    '    if (stageCount && in_struct->pStages) {\n'
+                    '        pStages = new safe_VkPipelineShaderStageCreateInfo[stageCount];\n'
+                    '        for (uint32_t i=0; i<stageCount; ++i) {\n'
+                    '            pStages[i].initialize(&in_struct->pStages[i]);\n'
+                    '        }\n'
+                    '    }\n'
+                    '    if (in_struct->pVertexInputState)\n'
+                    '        pVertexInputState = new safe_VkPipelineVertexInputStateCreateInfo(in_struct->pVertexInputState);\n'
+                    '    else\n'
+                    '        pVertexInputState = NULL;\n'
+                    '    if (in_struct->pInputAssemblyState)\n'
+                    '        pInputAssemblyState = new safe_VkPipelineInputAssemblyStateCreateInfo(in_struct->pInputAssemblyState);\n'
+                    '    else\n'
+                    '        pInputAssemblyState = NULL;\n'
+                    '    bool has_tessellation_stage = false;\n'
+                    '    if (stageCount && pStages)\n'
+                    '        for (uint32_t i=0; i<stageCount && !has_tessellation_stage; ++i)\n'
+                    '            if (pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT || pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)\n'
+                    '                has_tessellation_stage = true;\n'
+                    '    if (in_struct->pTessellationState && has_tessellation_stage)\n'
+                    '        pTessellationState = new safe_VkPipelineTessellationStateCreateInfo(in_struct->pTessellationState);\n'
+                    '    else\n'
+                    '        pTessellationState = NULL; // original pTessellationState pointer ignored\n'
+                    '    bool has_rasterization = in_struct->pRasterizationState ? !in_struct->pRasterizationState->rasterizerDiscardEnable : false;\n'
+                    '    if (in_struct->pViewportState && has_rasterization) {\n'
+                    '        bool is_dynamic_viewports = false;\n'
+                    '        bool is_dynamic_scissors = false;\n'
+                    '        if (in_struct->pDynamicState && in_struct->pDynamicState->pDynamicStates) {\n'
+                    '            for (uint32_t i = 0; i < in_struct->pDynamicState->dynamicStateCount && !is_dynamic_viewports; ++i)\n'
+                    '                if (in_struct->pDynamicState->pDynamicStates[i] == VK_DYNAMIC_STATE_VIEWPORT)\n'
+                    '                    is_dynamic_viewports = true;\n'
+                    '            for (uint32_t i = 0; i < in_struct->pDynamicState->dynamicStateCount && !is_dynamic_scissors; ++i)\n'
+                    '                if (in_struct->pDynamicState->pDynamicStates[i] == VK_DYNAMIC_STATE_SCISSOR)\n'
+                    '                    is_dynamic_scissors = true;\n'
+                    '        }\n'
+                    '        pViewportState = new safe_VkPipelineViewportStateCreateInfo(in_struct->pViewportState, is_dynamic_viewports, is_dynamic_scissors);\n'
+                    '    } else\n'
+                    '        pViewportState = NULL; // original pViewportState pointer ignored\n'
+                    '    if (in_struct->pRasterizationState)\n'
+                    '        pRasterizationState = new safe_VkPipelineRasterizationStateCreateInfo(in_struct->pRasterizationState);\n'
+                    '    else\n'
+                    '        pRasterizationState = NULL;\n'
+                    '    if (in_struct->pMultisampleState && has_rasterization)\n'
+                    '        pMultisampleState = new safe_VkPipelineMultisampleStateCreateInfo(in_struct->pMultisampleState);\n'
+                    '    else\n'
+                    '        pMultisampleState = NULL; // original pMultisampleState pointer ignored\n'
+                    '    // needs a tracked subpass state uses_depthstencil_attachment\n'
+                    '    if (in_struct->pDepthStencilState && has_rasterization && uses_depthstencil_attachment)\n'
+                    '        pDepthStencilState = new safe_VkPipelineDepthStencilStateCreateInfo(in_struct->pDepthStencilState);\n'
+                    '    else\n'
+                    '        pDepthStencilState = NULL; // original pDepthStencilState pointer ignored\n'
+                    '    // needs a tracked subpass state usesColorAttachment\n'
+                    '    if (in_struct->pColorBlendState && has_rasterization && uses_color_attachment)\n'
+                    '        pColorBlendState = new safe_VkPipelineColorBlendStateCreateInfo(in_struct->pColorBlendState);\n'
+                    '    else\n'
+                    '        pColorBlendState = NULL; // original pColorBlendState pointer ignored\n'
+                    '    if (in_struct->pDynamicState)\n'
+                    '        pDynamicState = new safe_VkPipelineDynamicStateCreateInfo(in_struct->pDynamicState);\n'
+                    '    else\n'
+                    '        pDynamicState = NULL;\n',
+                 # VkPipelineViewportStateCreateInfo is special case because its pointers may be non-null but ignored
+                'VkPipelineViewportStateCreateInfo' :
+                    '    if (in_struct->pViewports && !is_dynamic_viewports) {\n'
+                    '        pViewports = new VkViewport[in_struct->viewportCount];\n'
+                    '        memcpy ((void *)pViewports, (void *)in_struct->pViewports, sizeof(VkViewport)*in_struct->viewportCount);\n'
+                    '    }\n'
+                    '    else\n'
+                    '        pViewports = NULL;\n'
+                    '    if (in_struct->pScissors && !is_dynamic_scissors) {\n'
+                    '        pScissors = new VkRect2D[in_struct->scissorCount];\n'
+                    '        memcpy ((void *)pScissors, (void *)in_struct->pScissors, sizeof(VkRect2D)*in_struct->scissorCount);\n'
+                    '    }\n'
+                    '    else\n'
+                    '        pScissors = NULL;\n',
+                # VkDescriptorSetLayoutBinding is special case because its pImmutableSamplers pointer may be non-null but ignored
+                'VkDescriptorSetLayoutBinding' :
+                    '    const bool sampler_type = in_struct->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER || in_struct->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;\n'
+                    '    if (descriptorCount && in_struct->pImmutableSamplers && sampler_type) {\n'
+                    '        pImmutableSamplers = new VkSampler[descriptorCount];\n'
+                    '        for (uint32_t i=0; i<descriptorCount; ++i) {\n'
+                    '            pImmutableSamplers[i] = in_struct->pImmutableSamplers[i];\n'
+                    '        }\n'
+                    '    }\n',
+            }
+
+            custom_copy_txt = {
+                # VkGraphicsPipelineCreateInfo is special case because it has custom construct parameters
+                'VkGraphicsPipelineCreateInfo' :
+                    '    if (stageCount && src.pStages) {\n'
+                    '        pStages = new safe_VkPipelineShaderStageCreateInfo[stageCount];\n'
+                    '        for (uint32_t i=0; i<stageCount; ++i) {\n'
+                    '            pStages[i].initialize(&src.pStages[i]);\n'
+                    '        }\n'
+                    '    }\n'
+                    '    if (src.pVertexInputState)\n'
+                    '        pVertexInputState = new safe_VkPipelineVertexInputStateCreateInfo(*src.pVertexInputState);\n'
+                    '    else\n'
+                    '        pVertexInputState = NULL;\n'
+                    '    if (src.pInputAssemblyState)\n'
+                    '        pInputAssemblyState = new safe_VkPipelineInputAssemblyStateCreateInfo(*src.pInputAssemblyState);\n'
+                    '    else\n'
+                    '        pInputAssemblyState = NULL;\n'
+                    '    bool has_tessellation_stage = false;\n'
+                    '    if (stageCount && pStages)\n'
+                    '        for (uint32_t i=0; i<stageCount && !has_tessellation_stage; ++i)\n'
+                    '            if (pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT || pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)\n'
+                    '                has_tessellation_stage = true;\n'
+                    '    if (src.pTessellationState && has_tessellation_stage)\n'
+                    '        pTessellationState = new safe_VkPipelineTessellationStateCreateInfo(*src.pTessellationState);\n'
+                    '    else\n'
+                    '        pTessellationState = NULL; // original pTessellationState pointer ignored\n'
+                    '    bool has_rasterization = src.pRasterizationState ? !src.pRasterizationState->rasterizerDiscardEnable : false;\n'
+                    '    if (src.pViewportState && has_rasterization) {\n'
+                    '        pViewportState = new safe_VkPipelineViewportStateCreateInfo(*src.pViewportState);\n'
+                    '    } else\n'
+                    '        pViewportState = NULL; // original pViewportState pointer ignored\n'
+                    '    if (src.pRasterizationState)\n'
+                    '        pRasterizationState = new safe_VkPipelineRasterizationStateCreateInfo(*src.pRasterizationState);\n'
+                    '    else\n'
+                    '        pRasterizationState = NULL;\n'
+                    '    if (src.pMultisampleState && has_rasterization)\n'
+                    '        pMultisampleState = new safe_VkPipelineMultisampleStateCreateInfo(*src.pMultisampleState);\n'
+                    '    else\n'
+                    '        pMultisampleState = NULL; // original pMultisampleState pointer ignored\n'
+                    '    if (src.pDepthStencilState && has_rasterization)\n'
+                    '        pDepthStencilState = new safe_VkPipelineDepthStencilStateCreateInfo(*src.pDepthStencilState);\n'
+                    '    else\n'
+                    '        pDepthStencilState = NULL; // original pDepthStencilState pointer ignored\n'
+                    '    if (src.pColorBlendState && has_rasterization)\n'
+                    '        pColorBlendState = new safe_VkPipelineColorBlendStateCreateInfo(*src.pColorBlendState);\n'
+                    '    else\n'
+                    '        pColorBlendState = NULL; // original pColorBlendState pointer ignored\n'
+                    '    if (src.pDynamicState)\n'
+                    '        pDynamicState = new safe_VkPipelineDynamicStateCreateInfo(*src.pDynamicState);\n'
+                    '    else\n'
+                    '        pDynamicState = NULL;\n',
+                 # VkPipelineViewportStateCreateInfo is special case because it has custom construct parameters
+                'VkPipelineViewportStateCreateInfo' :
+                    '    if (src.pViewports) {\n'
+                    '        pViewports = new VkViewport[src.viewportCount];\n'
+                    '        memcpy ((void *)pViewports, (void *)src.pViewports, sizeof(VkViewport)*src.viewportCount);\n'
+                    '    }\n'
+                    '    else\n'
+                    '        pViewports = NULL;\n'
+                    '    if (src.pScissors) {\n'
+                    '        pScissors = new VkRect2D[src.scissorCount];\n'
+                    '        memcpy ((void *)pScissors, (void *)src.pScissors, sizeof(VkRect2D)*src.scissorCount);\n'
+                    '    }\n'
+                    '    else\n'
+                    '        pScissors = NULL;\n',
+            }
+
             custom_destruct_txt = {'VkShaderModuleCreateInfo' :
                                    '    if (pCode)\n'
                                    '        delete[] reinterpret_cast<const uint8_t *>(pCode);\n' }
@@ -874,7 +1033,7 @@ class HelperFileOutputGenerator(OutputGenerator):
                 construct_txt = custom_construct_txt[item.name]
             if item.name in custom_destruct_txt:
                 destruct_txt = custom_destruct_txt[item.name]
-            safe_struct_body.append("\n%s::%s(const %s* in_struct) :%s\n{\n%s}" % (ss_name, ss_name, item.name, init_list, construct_txt))
+            safe_struct_body.append("\n%s::%s(const %s* in_struct%s) :%s\n{\n%s}" % (ss_name, ss_name, item.name, self.custom_construct_params.get(item.name, ''), init_list, construct_txt))
             if '' != default_init_list:
                 default_init_list = " :%s" % (default_init_list[:-1])
             safe_struct_body.append("\n%s::%s()%s\n{}" % (ss_name, ss_name, default_init_list))
@@ -883,9 +1042,13 @@ class HelperFileOutputGenerator(OutputGenerator):
             copy_construct_txt = construct_txt.replace(' (in_struct->', ' (src.')     # Exclude 'if' blocks from next line
             copy_construct_txt = copy_construct_txt.replace('(in_struct->', '(*src.') # Pass object to copy constructors
             copy_construct_txt = copy_construct_txt.replace('in_struct->', 'src.')    # Modify remaining struct refs for src object
+            if item.name in custom_copy_txt:
+                copy_construct_txt = custom_copy_txt[item.name]
+            copy_assign_txt = '    if (&src == this) return *this;\n\n' + destruct_txt + '\n' + copy_construct_init + copy_construct_txt + '\n    return *this;'
             safe_struct_body.append("\n%s::%s(const %s& src)\n{\n%s%s}" % (ss_name, ss_name, ss_name, copy_construct_init, copy_construct_txt)) # Copy constructor
+            safe_struct_body.append("\n%s& %s::operator=(const %s& src)\n{\n%s\n}" % (ss_name, ss_name, ss_name, copy_assign_txt)) # Copy assignment operator
             safe_struct_body.append("\n%s::~%s()\n{\n%s}" % (ss_name, ss_name, destruct_txt))
-            safe_struct_body.append("\nvoid %s::initialize(const %s* in_struct)\n{\n%s%s}" % (ss_name, item.name, init_func_txt, construct_txt))
+            safe_struct_body.append("\nvoid %s::initialize(const %s* in_struct%s)\n{\n%s%s}" % (ss_name, item.name, self.custom_construct_params.get(item.name, ''), init_func_txt, construct_txt))
             # Copy initializer uses same txt as copy constructor but has a ptr and not a reference
             init_copy = copy_construct_init.replace('src.', 'src->')
             init_construct = copy_construct_txt.replace('src.', 'src->')
@@ -894,14 +1057,119 @@ class HelperFileOutputGenerator(OutputGenerator):
                 safe_struct_body.append("#endif // %s\n" % item.ifdef_protect)
         return "\n".join(safe_struct_body)
     #
+    # Generate the type map
+    def GenerateTypeMapHelperHeader(self):
+        prefix = 'Lvl'
+        fprefix = 'lvl_'
+        typemap = prefix + 'TypeMap'
+        idmap = prefix + 'STypeMap'
+        type_member = 'Type'
+        id_member = 'kSType'
+        id_decl = 'static const VkStructureType '
+        generic_header = prefix + 'GenericHeader'
+        typename_func = fprefix + 'typename'
+        idname_func = fprefix + 'stype_name'
+        find_func = fprefix + 'find_in_chain'
+        init_func = fprefix + 'init_struct'
+
+        explanatory_comment = '\n'.join((
+                '// These empty generic templates are specialized for each type with sType',
+                '// members and for each sType -- providing a two way map between structure',
+                '// types and sTypes'))
+
+        empty_typemap = 'template <typename T> struct ' + typemap + ' {};'
+        typemap_format  = 'template <> struct {template}<{typename}> {{\n'
+        typemap_format += '    {id_decl}{id_member} = {id_value};\n'
+        typemap_format += '}};\n'
+
+        empty_idmap = 'template <VkStructureType id> struct ' + idmap + ' {};'
+        idmap_format = ''.join((
+            'template <> struct {template}<{id_value}> {{\n',
+            '    typedef {typename} {typedef};\n',
+            '}};\n'))
+
+        # Define the utilities (here so any renaming stays consistent), if this grows large, refactor to a fixed .h file
+        utilities_format = '\n'.join((
+            '// Header "base class" for pNext chain traversal',
+            'struct {header} {{',
+            '   VkStructureType sType;',
+            '   const {header} *pNext;',
+            '}};',
+            '',
+            '// Find an entry of the given type in the pNext chain',
+            'template <typename T> const T *{find_func}(const void *next) {{',
+            '    const {header} *current = reinterpret_cast<const {header} *>(next);',
+            '    const T *found = nullptr;',
+            '    while (current) {{',
+            '        if ({type_map}<T>::{id_member} == current->sType) {{',
+            '            found = reinterpret_cast<const T*>(current);',
+            '            current = nullptr;',
+            '        }} else {{',
+            '            current = current->pNext;',
+            '        }}',
+            '    }}',
+            '    return found;',
+            '}}',
+            '',
+            '// Init the header of an sType struct with pNext',
+            'template <typename T> T {init_func}(void *p_next) {{',
+            '    T out = {{}};',
+            '    out.sType = {type_map}<T>::kSType;',
+            '    out.pNext = p_next;',
+            '    return out;',
+            '}}',
+                        '',
+            '// Init the header of an sType struct',
+            'template <typename T> T {init_func}() {{',
+            '    T out = {{}};',
+            '    out.sType = {type_map}<T>::kSType;',
+            '    return out;',
+            '}}',
+
+            ''))
+
+        code = []
+
+        # Generate header
+        code.append('\n'.join((
+            '#pragma once',
+            '#include <vulkan/vulkan.h>\n',
+            explanatory_comment, '',
+            empty_idmap,
+            empty_typemap, '')))
+
+        # Generate the specializations for each type and stype
+        for item in self.structMembers:
+            typename = item.name
+            info = self.structTypes.get(typename)
+            if not info:
+                continue
+
+            if item.ifdef_protect != None:
+                code.append('#ifdef %s' % item.ifdef_protect)
+
+            code.append('// Map type {} to id {}'.format(typename, info.value))
+            code.append(typemap_format.format(template=typemap, typename=typename, id_value=info.value,
+                id_decl=id_decl, id_member=id_member))
+            code.append(idmap_format.format(template=idmap, typename=typename, id_value=info.value, typedef=type_member))
+
+            if item.ifdef_protect != None:
+                code.append('#endif // %s' % item.ifdef_protect)
+
+        # Generate utilities for all types
+        code.append('\n'.join((
+            utilities_format.format(id_member=id_member, id_map=idmap, type_map=typemap,
+                type_member=type_member, header=generic_header, typename_func=typename_func, idname_func=idname_func,
+                find_func=find_func, init_func=init_func), ''
+            )))
+
+        return "\n".join(code)
+
+    #
     # Create a helper file and return it as a string
     def OutputDestFile(self):
         if self.helper_file_type == 'enum_string_header':
             return self.GenerateEnumStringHelperHeader()
-        elif self.helper_file_type == 'struct_size_header':
-            return self.GenerateStructSizeHelperHeader()
-        elif self.helper_file_type == 'struct_size_source':
-            return self.GenerateStructSizeHelperSource()
         elif self.helper_file_type == 'safe_struct_header':
             return self.GenerateSafeStructHelperHeader()
         elif self.helper_file_type == 'safe_struct_source':
@@ -910,6 +1178,8 @@ class HelperFileOutputGenerator(OutputGenerator):
             return self.GenerateObjectTypesHelperHeader()
         elif self.helper_file_type == 'extension_helper_header':
             return self.GenerateExtensionHelperHeader()
+        elif self.helper_file_type == 'typemap_helper_header':
+            return self.GenerateTypeMapHelperHeader()
         else:
             return 'Bad Helper File Generator Option %s' % self.helper_file_type
 

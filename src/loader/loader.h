@@ -137,6 +137,11 @@ struct loader_layer_properties {
     struct loader_name_value enable_env_var;
     uint32_t num_component_layers;
     char (*component_layer_names)[MAX_STRING_SIZE];
+    struct {
+        char enumerate_instance_extension_properties[MAX_STRING_SIZE];
+        char enumerate_instance_layer_properties[MAX_STRING_SIZE];
+        char enumerate_instance_version[MAX_STRING_SIZE];
+    } pre_instance_functions;
 };
 
 struct loader_layer_list {
@@ -187,6 +192,14 @@ struct loader_device {
 
     VkAllocationCallbacks alloc_callbacks;
 
+    // List of activated device extensions that have terminators implemented in the loader
+    struct {
+        bool khr_swapchain_enabled;
+        bool khr_display_swapchain_enabled;
+        bool ext_debug_marker_enabled;
+        bool ext_debug_utils_enabled;
+    } extensions;
+
     struct loader_device *next;
 };
 
@@ -224,6 +237,10 @@ struct loader_instance_dispatch_table {
 struct loader_instance {
     struct loader_instance_dispatch_table *disp;  // must be first entry in structure
 
+    // Vulkan API version the app is intending to use.
+    uint16_t app_api_major_version;
+    uint16_t app_api_minor_version;
+
     // We need to manually track physical devices over time.  If the user
     // re-queries the information, we don't want to delete old data or
     // create new data unless necessary.
@@ -237,9 +254,9 @@ struct loader_instance {
     // loader specific structures since we have that content in the physical
     // device stored internal to the public structures.
     uint32_t phys_dev_group_count_term;
-    struct VkPhysicalDeviceGroupPropertiesKHX **phys_dev_groups_term;
+    struct VkPhysicalDeviceGroupProperties **phys_dev_groups_term;
     uint32_t phys_dev_group_count_tramp;
-    struct VkPhysicalDeviceGroupPropertiesKHX **phys_dev_groups_tramp;
+    struct VkPhysicalDeviceGroupProperties **phys_dev_groups_tramp;
 
     struct loader_instance *next;
 
@@ -268,9 +285,12 @@ struct loader_instance {
     union loader_instance_extension_enables enabled_known_extensions;
 
     VkLayerDbgFunctionNode *DbgFunctionHead;
-    uint32_t num_tmp_callbacks;
-    VkDebugReportCallbackCreateInfoEXT *tmp_dbg_create_infos;
-    VkDebugReportCallbackEXT *tmp_callbacks;
+    uint32_t num_tmp_report_callbacks;
+    VkDebugReportCallbackCreateInfoEXT *tmp_report_create_infos;
+    VkDebugReportCallbackEXT *tmp_report_callbacks;
+    uint32_t num_tmp_messengers;
+    VkDebugUtilsMessengerCreateInfoEXT *tmp_messenger_create_infos;
+    VkDebugUtilsMessengerEXT *tmp_messengers;
 
     VkAllocationCallbacks alloc_callbacks;
 
@@ -292,6 +312,12 @@ struct loader_instance {
 #endif
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
     bool wsi_android_surface_enabled;
+#endif
+#ifdef VK_USE_PLATFORM_MACOS_MVK
+    bool wsi_macos_surface_enabled;
+#endif
+#ifdef VK_USE_PLATFORM_IOS_MVK
+    bool wsi_ios_surface_enabled;
 #endif
     bool wsi_display_enabled;
 };
@@ -375,7 +401,9 @@ static inline void loader_init_dispatch(void *obj, const void *data) {
 // Global variables used across files
 extern struct loader_struct loader;
 extern THREAD_LOCAL_DECL struct loader_instance *tls_instance;
+#if defined(_WIN32) && !defined(LOADER_DYNAMIC_LIB)
 extern LOADER_PLATFORM_THREAD_ONCE_DEFINITION(once_init);
+#endif
 extern loader_platform_thread_mutex loader_lock;
 extern loader_platform_thread_mutex loader_json_lock;
 

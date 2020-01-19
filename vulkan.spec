@@ -4,21 +4,21 @@
 %global shortcommit %(c=%{commit}; echo ${c:0:7})
 %global srcname Vulkan-LoaderAndValidationLayers
 
-%global commit1 3a21c880500eac21cdf79bef5b80f970a55ac6af
+%global commit1 3bb4c48cd95892a5cfcd63df20fcc47fd51c97a0
 %global srcname1 glslang
 
-%global commit2 2bb92e6fe2c6aa410152fc6c63443f452acb1a65
-%global srcname2 SPIRV-Headers
+%global commit2 12f8de9f04327336b699b1b80aa390ae7f9ddbf4
+%global srcname2 spirv-headers
 
-%global commit3 7e2d26c77b606b21af839b37fd21381c4a669f23
-%global srcname3 SPIRV-Tools
+%global commit3 26a698c34788bb69123a1f3789970a16cf4d9641
+%global srcname3 spirv-tools
 
 Name:           vulkan
-Version:        1.0.61.1
+Version:        1.1.73.0
 %if 0%{?use_git}
 Release:        0.1.git%{shortcommit}%{?dist}
 %else
-Release:        2%{?dist}
+Release:        1%{?dist}
 %endif
 Summary:        Vulkan loader and validation layers
 
@@ -33,12 +33,12 @@ Source0:        %url/%{srcname}/archive/sdk-%{version}.tar.gz#/%{srcname}-sdk-%{
 Source1:        %url/%{srcname1}/archive/%{commit1}.tar.gz#/%{srcname1}-%{commit1}.tar.gz
 Source2:        %url/%{srcname2}/archive/%{commit2}.tar.gz#/%{srcname2}-%{commit2}.tar.gz
 Source3:        %url/%{srcname3}/archive/%{commit3}.tar.gz#/%{srcname3}-%{commit3}.tar.gz
+Source4:        spirv_tools_commit_id.h
 
-Patch0:         0003-layers-Don-t-set-an-rpath.patch
-Patch1:         0008-demos-Don-t-build-tri-or-cube.patch
-Patch2:		hacked-python2.patch
-Patch3:		no-smoke-demo.patch
-Patch4:		0001-loader-Fix-TEXTREL-on-32-bit-linux-loader.patch
+Patch0:         cmake_spirv_tools_commit.patch
+Patch1:         0003-layers-Don-t-set-an-rpath.patch
+Patch2:         0008-demos-Don-t-build-tri-or-cube.patch
+Patch3:		hacked-python2.patch
 
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
@@ -95,10 +95,10 @@ Filesystem for Vulkan.
 %autosetup -p1 -n %{srcname}-sdk-%{version}
 %endif
 
-mkdir -p build/ external/glslang/build/install external/spirv-tools/build/ external/spirv-tools/external/spirv-headers
+mkdir -p build/ external/glslang/build/install external/spirv-tools/build/ external/spirv-tools/external/spirv-headers external/glslang/External/spirv-tools/external/spirv-headers
 tar -xf %{SOURCE1} -C external/glslang --strip 1
-tar -xf %{SOURCE2} -C external/spirv-tools/external/spirv-headers --strip 1
-tar -xf %{SOURCE3} -C external/spirv-tools --strip 1
+tar -xf %{SOURCE2} -C external/glslang/External/spirv-tools/external/spirv-headers --strip 1
+tar -xf %{SOURCE3} -C external/glslang/External/spirv-tools --strip 1
 # fix spurious-executable-perm
 chmod 0644 README.md
 chmod 0644 external/glslang/SPIRV/spirv.hpp
@@ -119,11 +119,13 @@ cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=./install -DCMAKE_VERBOS
 make install
 popd
 
-pushd external/spirv-tools/build/
-cmake -DSPIRV_WERROR=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON ..
-%make_build
-popd
-
+# hack to avoid running of memory on aarch64 and i686 build
+%global _smp_mflags -j1
+%ifarch %{ix86} aarch64
+# Decrease debuginfo verbosity to reduce memory consumption even more
+%global optflags %(echo %{optflags} | sed 's/-g /-g1 /')
+%endif
+cp %{SOURCE4} .
 pushd build/
 %cmake -DCMAKE_BUILD_TYPE=Release \
        -DCMAKE_SKIP_INSTALL_RPATH:BOOL=yes \
@@ -131,10 +133,12 @@ pushd build/
        -DBUILD_VKJSON=OFF \
        -DCMAKE_INSTALL_SYSCONFDIR:PATH=%{_datadir} \
        -DBUILD_WSI_MIR_SUPPORT=OFF \
+       -DBUILD_TESTS=OFF \
 %if 0%{?rhel}
        -DBUILD_WSI_WAYLAND_SUPPORT=OFF \
 %endif
  ..
+cp %{SOURCE4} .
 %make_build
 popd
 
@@ -178,6 +182,10 @@ chrpath -d %{buildroot}%{_bindir}/vulkaninfo
 %dir %{_datadir}/vulkan/implicit_layer.d/
 
 %changelog
+* Tue May 08 2018 Dave Airlie <airlied@redhat.com> 1.1.73.0-1
+- Update to 1.1.73.0 release
+- fixup spec for spirv-tools etc
+
 * Tue Oct 10 2017 Dave Airlie <airlied@redhat.com> - 1.0.61.1-2
 - fix 32-bit textrels
 
