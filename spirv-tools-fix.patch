@@ -1,0 +1,20 @@
+diff -up SPIRV-Tools-2019.1/tools/io.h.dm SPIRV-Tools-2019.1/tools/io.h
+--- SPIRV-Tools-2019.1/tools/io.h.dm	2019-02-18 14:14:46.362572748 +1000
++++ SPIRV-Tools-2019.1/tools/io.h	2019-02-18 14:15:12.446271338 +1000
+@@ -34,13 +34,14 @@ bool ReadFile(const char* filename, cons
+     while (size_t len = fread(buf, sizeof(T), buf_size, fp)) {
+       data->insert(data->end(), buf, buf + len);
+     }
+-    if (ftell(fp) == -1L) {
++    long _pos = ftell(fp);
++    if (_pos == -1L) {
+       if (ferror(fp)) {
+         fprintf(stderr, "error: error reading file '%s'\n", filename);
+         return false;
+       }
+     } else {
+-      if (sizeof(T) != 1 && (ftell(fp) % sizeof(T))) {
++      if (sizeof(T) != 1 && (_pos % sizeof(T))) {
+         fprintf(
+             stderr,
+             "error: file size should be a multiple of %zd; file '%s' corrupt\n",

@@ -1,44 +1,40 @@
-%global use_git 0
 
-%global commit  d4cd34fd49caa759cf01cafa5fa271401b17c3b9
-%global shortcommit %(c=%{commit}; echo ${c:0:7})
-%global srcname Vulkan-LoaderAndValidationLayers
+%global srcname Vulkan-Loader
 
-%global commit1 3bb4c48cd95892a5cfcd63df20fcc47fd51c97a0
+%global commit1 05d12a9461dd0a76053bdd42f062a37a10d56afb
 %global srcname1 glslang
 
-%global commit2 12f8de9f04327336b699b1b80aa390ae7f9ddbf4
+%global commit2 8bea0a266ac9b718aa0818d9e3a47c0b77c2cb23
 %global srcname2 spirv-headers
 
-%global commit3 26a698c34788bb69123a1f3789970a16cf4d9641
+%global ver3 2019.1
 %global srcname3 spirv-tools
 
+%global srcname4 Vulkan-Headers
+%global srcname5 Vulkan-ValidationLayers
+%global srcname6 Vulkan-Tools
+
 Name:           vulkan
-Version:        1.1.73.0
-%if 0%{?use_git}
-Release:        0.1.git%{shortcommit}%{?dist}
-%else
+Version:        1.1.97.0
 Release:        1%{?dist}
-%endif
 Summary:        Vulkan loader and validation layers
 
 License:        ASL 2.0
 URL:            https://github.com/KhronosGroup
 
-%if 0%{?use_git}
-Source0:        %url/%{srcname}/archive/%{commit}.tar.gz#/%{srcname}-%{commit}.tar.gz
-%else
 Source0:        %url/%{srcname}/archive/sdk-%{version}.tar.gz#/%{srcname}-sdk-%{version}.tar.gz
-%endif
 Source1:        %url/%{srcname1}/archive/%{commit1}.tar.gz#/%{srcname1}-%{commit1}.tar.gz
 Source2:        %url/%{srcname2}/archive/%{commit2}.tar.gz#/%{srcname2}-%{commit2}.tar.gz
-Source3:        %url/%{srcname3}/archive/%{commit3}.tar.gz#/%{srcname3}-%{commit3}.tar.gz
-Source4:        spirv_tools_commit_id.h
+Source3:        %url/%{srcname3}/archive/%{ver3}.tar.gz#/%{srcname3}-%{ver3}.tar.gz
+Source4:        %url/%{srcname4}/archive/sdk-%{version}.tar.gz#/%{srcname4}-sdk-%{version}.tar.gz
+Source5:        %url/%{srcname5}/archive/sdk-%{version}.tar.gz#/%{srcname5}-sdk-%{version}.tar.gz
+Source6:        %url/%{srcname6}/archive/sdk-%{version}.tar.gz#/%{srcname6}-sdk-%{version}.tar.gz
+Source7:        spirv_tools_commit_id.h
+Source8:        cmake-3.4.3.tar.gz
 
-Patch0:         cmake_spirv_tools_commit.patch
-Patch1:         0003-layers-Don-t-set-an-rpath.patch
-Patch2:         0008-demos-Don-t-build-tri-or-cube.patch
-Patch3:		hacked-python2.patch
+Patch0: fix_shared.patch
+Patch1: spirv-tools-fix.patch
+Patch2: layers-no-rpath.patch
 
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
@@ -47,15 +43,11 @@ BuildRequires:  cmake
 BuildRequires:  /usr/bin/chrpath
 BuildRequires:  pkgconfig(libsystemd)
 BuildRequires:  pkgconfig(pciaccess)
-%if 0%{?fedora}
 BuildRequires:  python3
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-egl)
-%else
-BuildRequires:  python
-%endif
 BuildRequires:  pkgconfig(x11)
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xrandr)
@@ -89,68 +81,143 @@ BuildArch:      noarch
 Filesystem for Vulkan.
 
 %prep
-%if 0%{?use_git}
-%autosetup -p1 -n %{srcname}-%{commit}
-%else
-%autosetup -p1 -n %{srcname}-sdk-%{version}
-%endif
-
-mkdir -p build/ external/glslang/build/install external/spirv-tools/build/ external/spirv-tools/external/spirv-headers external/glslang/External/spirv-tools/external/spirv-headers
-tar -xf %{SOURCE1} -C external/glslang --strip 1
-tar -xf %{SOURCE2} -C external/glslang/External/spirv-tools/external/spirv-headers --strip 1
-tar -xf %{SOURCE3} -C external/glslang/External/spirv-tools --strip 1
-# fix spurious-executable-perm
-chmod 0644 README.md
-chmod 0644 external/glslang/SPIRV/spirv.hpp
-chmod +x scripts/lvl_genvk.py
-# fix wrong-script-end-of-line-encoding
-sed -i 's/\r//' README.md
-
-# sigh inttypes
-sed -i 's/inttypes.h/cinttypes/' layers/*.{cpp,h}
+%setup -T -D -b 0 -n %{srcname}-sdk-%{version}
+%setup -T -D -b 8 -n cmake-3.4.3
+%setup -T -D -b 2 -n SPIRV-Headers-%{commit2}
+%setup -T -D -b 3 -n SPIRV-Tools-%{ver3}
+%patch1 -p1
+%setup -T -D -b 1 -n glslang-%{commit1}
+%setup -T -D -b 4 -n %{srcname4}-sdk-%{version}
+%setup -T -D -b 5 -n %{srcname5}-sdk-%{version}
+%patch0 -p1
+%patch2 -p1
+%setup -T -D -b 6 -n %{srcname6}-sdk-%{version}
+cd -
 
 %build
-pushd external/glslang/build/
-CFLAGS="$RPM_OPT_FLAGS" ; export CFLAGS ; 
-CXXFLAGS="$RPM_OPT_FLAGS" ; export CXXFLAGS ; 
-LDFLAGS="$RPM_LD_FLAGS" ; export LDFLAGS ;
-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=./install -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON ..
+
+cd ../cmake-3.4.3
+BUILD_DIR=`pwd`/cmake_build
+cmake . -DCMAKE_INSTALL_PREFIX=$BUILD_DIR
+make
+make install
+cd -
+
+export PATH=$BUILD_DIR/bin:$PATH
+%global __cmake $BUILD_DIR/bin/cmake
+
+# install into somewhere outside the buildroot temporarily
+export DESTDIR=../../install
+export USRDIR=$PWD/../install/usr
+cd ..
+pushd %{srcname4}-sdk-%{version}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON ..
 %make_build
 make install
+cd -
+popd
+
+pushd SPIRV-Headers-%{commit2}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON ..
+%make_build
+make install
+cd -
+popd
+
+pushd SPIRV-Tools-%{ver3}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON .. -DSPIRV-Headers_SOURCE_DIR=$USRDIR
+%make_build
+make install
+cd -
+popd
+
+pushd %{srcname}-sdk-%{version}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON .. -DVULKAN_HEADERS_INSTALL_DIR=$USRDIR
+%make_build
+make install
+cd -
+popd
+
+pushd glslang-%{commit1}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON .. -DVULKAN_HEADERS_INSTALL_DIR=$USRDIR -DCMAKE_INSTALL_LIBDIR=%{_libdir} -DCMAKE_SKIP_RPATH:BOOL=yes -DBUILD_SHARED_LIBS=OFF
+%make_build
+make install
+cd -
 popd
 
 # hack to avoid running of memory on aarch64 and i686 build
-%global _smp_mflags -j1
 %ifarch %{ix86} aarch64
 # Decrease debuginfo verbosity to reduce memory consumption even more
 %global optflags %(echo %{optflags} | sed 's/-g /-g1 /')
 %endif
-cp %{SOURCE4} .
-pushd build/
-%cmake -DCMAKE_BUILD_TYPE=Release \
-       -DCMAKE_SKIP_INSTALL_RPATH:BOOL=yes \
-       -DCMAKE_SKIP_RPATH:BOOL=yes \
-       -DBUILD_VKJSON=OFF \
-       -DCMAKE_INSTALL_SYSCONFDIR:PATH=%{_datadir} \
-       -DBUILD_WSI_MIR_SUPPORT=OFF \
-       -DBUILD_TESTS=OFF \
-%if 0%{?rhel}
-       -DBUILD_WSI_WAYLAND_SUPPORT=OFF \
-%endif
- ..
-cp %{SOURCE4} .
+
+pushd %{srcname5}-sdk-%{version}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON .. -DVULKAN_HEADERS_INSTALL_DIR=$USRDIR -DGLSLANG_INSTALL_DIR=$USRDIR
 %make_build
+cd -
+popd
+
+pushd %{srcname6}-sdk-%{version}
+mkdir -p build
+cd build
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON .. -DVULKAN_HEADERS_INSTALL_DIR=$USRDIR -DGLSLANG_INSTALL_DIR=$USRDIR -DBUILD_CUBE:BOOL=OFF
+%make_build
+cd -
 popd
 
 %install
-pushd build/
+
+cd ..
+pushd %{srcname4}-sdk-%{version}/build
 %{make_install}
 popd
 
+pushd %{srcname}-sdk-%{version}/build
+%{make_install}
+popd
+
+pushd SPIRV-Tools-%{ver3}/build
+%{make_install}
+popd
+
+pushd %{srcname5}-sdk-%{version}/build
+# this doesn't use the macro as we don't want to trigger cmake rebuilds here
+DESTDIR=$RPM_BUILD_ROOT cmake -P cmake_install.cmake
+popd
+
+pushd %{srcname6}-sdk-%{version}/build
+# this doesn't use the macro as we don't want to trigger cmake rebuilds here
+DESTDIR=$RPM_BUILD_ROOT cmake -P cmake_install.cmake
+popd
+cd -
 # create the filesystem
 mkdir -p %{buildroot}%{_sysconfdir}/vulkan/{explicit,implicit}_layer.d/ \
 %{buildroot}%{_datadir}/vulkan/{explicit,implicit}_layer.d/ \
 %{buildroot}{%{_sysconfdir},%{_datadir}}/vulkan/icd.d
+
+# don't want spirv-tools
+rm -f %{buildroot}%{_bindir}/spirv-*
+rm -f %{buildroot}%{_libdir}/pkgconfig/SPIRV*
+rm -rf %{buildroot}%{_includedir}/spirv-tools
+rm -f %{buildroot}%{_libdir}/libSPIRV-Tools-link.so
+rm -f %{buildroot}%{_libdir}/libSPIRV-Tools-reduce.so
+rm -f %{buildroot}%{_libdir}/libSPIRV-Tools-shared.so
+
+# remove unused includes and registry
+rm -rf %{buildroot}%{_datadir}/vulkan/registry
+rm -f %{buildroot}%{_includedir}/vk*.h %{buildroot}%{_includedir}/hash*.h %{buildroot}%{_includedir}/*.cpp
 
 # remove RPATH
 chrpath -d %{buildroot}%{_bindir}/vulkaninfo
@@ -159,12 +226,13 @@ chrpath -d %{buildroot}%{_bindir}/vulkaninfo
 %postun -p /sbin/ldconfig
 
 %files
-%license LICENSE.txt COPYRIGHT.txt
+%license LICENSE.txt
 %doc README.md CONTRIBUTING.md
 %{_bindir}/vulkaninfo
 %{_datadir}/vulkan/explicit_layer.d/*.json
 %{_libdir}/libVkLayer_*.so
 %{_libdir}/libvulkan.so.*
+%{_libdir}/libSPIRV*so
 
 %files devel
 %{_includedir}/vulkan/
@@ -182,6 +250,10 @@ chrpath -d %{buildroot}%{_bindir}/vulkaninfo
 %dir %{_datadir}/vulkan/implicit_layer.d/
 
 %changelog
+* Tue Feb 19 2019 Dave Airlie <airlied@redhat.com> 1.1.97.0-1
+- Update to 1.1.97.0
+- rework spec for new upstream layout
+
 * Tue May 08 2018 Dave Airlie <airlied@redhat.com> 1.1.73.0-1
 - Update to 1.1.73.0 release
 - fixup spec for spirv-tools etc

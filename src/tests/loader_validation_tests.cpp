@@ -405,6 +405,35 @@ VKAPI_ATTR void *VKAPI_CALL ReallocCallbackFunc(void *pUserData, void *pOriginal
     }
 }
 
+void test_create_device(VkPhysicalDevice physical) {
+    uint32_t familyCount = 0;
+    VkResult result;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &familyCount, nullptr);
+    ASSERT_GT(familyCount, 0u);
+
+    std::unique_ptr<VkQueueFamilyProperties[]> family(new VkQueueFamilyProperties[familyCount]);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &familyCount, family.get());
+    ASSERT_GT(familyCount, 0u);
+
+    for (uint32_t q = 0; q < familyCount; ++q) {
+        if (~family[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            continue;
+        }
+
+        float const priorities[] = {0.0f};  // Temporary required due to MSVC bug.
+        VkDeviceQueueCreateInfo const queueInfo[1]{
+            VK::DeviceQueueCreateInfo().queueFamilyIndex(q).queueCount(1).pQueuePriorities(priorities)};
+
+        auto const deviceInfo = VK::DeviceCreateInfo().queueCreateInfoCount(1).pQueueCreateInfos(queueInfo);
+
+        VkDevice device;
+        result = vkCreateDevice(physical, deviceInfo, nullptr, &device);
+        ASSERT_EQ(result, VK_SUCCESS);
+
+        vkDestroyDevice(device, nullptr);
+    }
+}
+
 // Test groups:
 // LX = lunar exchange
 // LVLGH = loader and validation github
@@ -448,19 +477,29 @@ TEST(CreateInstance, LayerNotPresent) {
 
 // Used by run_loader_tests.sh to test for layer insertion.
 TEST(CreateInstance, LayerPresent) {
-    char const *const names1[] = {"VK_LAYER_LUNARG_parameter_validation"};  // Temporary required due to MSVC bug.
-    char const *const names2[] = {"VK_LAYER_LUNARG_standard_validation"};   // Temporary required due to MSVC bug.
+    char const *const names1[] = {"VK_LAYER_LUNARG_test"};  // Temporary required due to MSVC bug.
+    char const *const names2[] = {"VK_LAYER_LUNARG_meta"};  // Temporary required due to MSVC bug.
+    char const *const names3[] = {"VK_LAYER_LUNARG_meta_rev"};  // Temporary required due to MSVC bug.
     auto const info1 = VK::InstanceCreateInfo().enabledLayerCount(1).ppEnabledLayerNames(names1);
     VkInstance instance = VK_NULL_HANDLE;
     VkResult result = vkCreateInstance(info1, VK_NULL_HANDLE, &instance);
     ASSERT_EQ(result, VK_SUCCESS);
     vkDestroyInstance(instance, nullptr);
 
-    auto const info2 = VK::InstanceCreateInfo().enabledLayerCount(1).ppEnabledLayerNames(names2);
-    instance = VK_NULL_HANDLE;
-    result = vkCreateInstance(info2, VK_NULL_HANDLE, &instance);
-    ASSERT_EQ(result, VK_SUCCESS);
-    vkDestroyInstance(instance, nullptr);
+    for (auto names : {names2, names3}) {
+        auto const info2 = VK::InstanceCreateInfo().enabledLayerCount(1).ppEnabledLayerNames(names);
+        instance = VK_NULL_HANDLE;
+        result = vkCreateInstance(info2, VK_NULL_HANDLE, &instance);
+        ASSERT_EQ(result, VK_SUCCESS);
+
+        uint32_t deviceCount;
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+        std::vector<VkPhysicalDevice> devs(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devs.data());
+        test_create_device(devs[0]);
+
+        vkDestroyInstance(instance, nullptr);
+    }
 }
 
 // Used by run_loader_tests.sh to test that calling vkEnumeratePhysicalDevices without first querying
@@ -556,9 +595,8 @@ TEST(EnumeratePhysicalDevices, TwoCallIncomplete) {
 
 // Test to make sure that layers enabled in the instance show up in the list of device layers.
 TEST(EnumerateDeviceLayers, LayersMatch) {
-    char const *const names1[] = {"VK_LAYER_LUNARG_standard_validation"};
-    char const *const names2[3] = {"VK_LAYER_LUNARG_parameter_validation", "VK_LAYER_LUNARG_core_validation",
-                                   "VK_LAYER_LUNARG_object_tracker"};
+    char const *const names1[] = {"VK_LAYER_LUNARG_meta"};
+    char const *const names2[2] = {"VK_LAYER_LUNARG_test", "VK_LAYER_LUNARG_wrap_objects"};
     auto const info1 = VK::InstanceCreateInfo().enabledLayerCount(1).ppEnabledLayerNames(names1);
     VkInstance instance = VK_NULL_HANDLE;
     VkResult result = vkCreateInstance(info1, VK_NULL_HANDLE, &instance);
@@ -590,7 +628,7 @@ TEST(EnumerateDeviceLayers, LayersMatch) {
 
     vkDestroyInstance(instance, nullptr);
 
-    auto const info2 = VK::InstanceCreateInfo().enabledLayerCount(3).ppEnabledLayerNames(names2);
+    auto const info2 = VK::InstanceCreateInfo().enabledLayerCount(2).ppEnabledLayerNames(names2);
     instance = VK_NULL_HANDLE;
     result = vkCreateInstance(info2, VK_NULL_HANDLE, &instance);
     ASSERT_EQ(result, VK_SUCCESS);
@@ -607,8 +645,8 @@ TEST(EnumerateDeviceLayers, LayersMatch) {
 
     count = 24;
     vkEnumerateDeviceLayerProperties(physical2[0], &count, layer_props);
-    ASSERT_GE(count, 3u);
-    for (uint32_t jjj = 0; jjj < 3; jjj++) {
+    ASSERT_GE(count, 2u);
+    for (uint32_t jjj = 0; jjj < 2; jjj++) {
         found = false;
         for (uint32_t iii = 0; iii < count; iii++) {
             if (!strcmp(layer_props[iii].layerName, names2[jjj])) {
@@ -999,33 +1037,7 @@ TEST(WrapObjects, Insert) {
     ASSERT_GT(physicalCount, 0u);
 
     for (uint32_t p = 0; p < physicalCount; ++p) {
-        uint32_t familyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physical[p], &familyCount, nullptr);
-        ASSERT_EQ(result, VK_SUCCESS);
-        ASSERT_GT(familyCount, 0u);
-
-        std::unique_ptr<VkQueueFamilyProperties[]> family(new VkQueueFamilyProperties[familyCount]);
-        vkGetPhysicalDeviceQueueFamilyProperties(physical[p], &familyCount, family.get());
-        ASSERT_EQ(result, VK_SUCCESS);
-        ASSERT_GT(familyCount, 0u);
-
-        for (uint32_t q = 0; q < familyCount; ++q) {
-            if (~family[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-                continue;
-            }
-
-            float const priorities[] = {0.0f};  // Temporary required due to MSVC bug.
-            VkDeviceQueueCreateInfo const queueInfo[1]{
-                VK::DeviceQueueCreateInfo().queueFamilyIndex(q).queueCount(1).pQueuePriorities(priorities)};
-
-            auto const deviceInfo = VK::DeviceCreateInfo().queueCreateInfoCount(1).pQueueCreateInfos(queueInfo);
-
-            VkDevice device;
-            result = vkCreateDevice(physical[p], deviceInfo, nullptr, &device);
-            ASSERT_EQ(result, VK_SUCCESS);
-
-            vkDestroyDevice(device, nullptr);
-        }
+        test_create_device(physical[p]);
     }
 
     vkDestroyInstance(instance, nullptr);

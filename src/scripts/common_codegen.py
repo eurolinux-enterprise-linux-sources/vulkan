@@ -22,7 +22,6 @@ import os,re,sys,string
 import xml.etree.ElementTree as etree
 from generator import *
 from collections import namedtuple
-from vuid_mapping import *
 
 # Copyright text prefixing all headers (list of strings).
 prefixStrings = [
@@ -50,9 +49,9 @@ prefixStrings = [
 
 platform_dict = {
     'android' : 'VK_USE_PLATFORM_ANDROID_KHR',
+    'fuchsia' : 'VK_USE_PLATFORM_FUCHSIA',
     'ios' : 'VK_USE_PLATFORM_IOS_MVK',
     'macos' : 'VK_USE_PLATFORM_MACOS_MVK',
-    'mir' : 'VK_USE_PLATFORM_MIR_KHR',
     'vi' : 'VK_USE_PLATFORM_VI_NN',
     'wayland' : 'VK_USE_PLATFORM_WAYLAND_KHR',
     'win32' : 'VK_USE_PLATFORM_WIN32_KHR',

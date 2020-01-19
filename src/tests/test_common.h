@@ -63,11 +63,7 @@
 #endif
 
 // Use the NDK's header on Android
-#ifndef __ANDROID__
-#include "../submodules/googletest/googletest/include/gtest/gtest.h"
-#else
 #include "gtest/gtest.h"
-#endif
 
 // Redefine Xlib definitions
 #ifdef VK_USE_PLATFORM_XLIB_KHR
@@ -78,7 +74,6 @@
 #ifdef _WIN32
 #pragma warning(pop)
 #endif
-#include "vktestbinding.h"
 
 #define ASSERT_VK_SUCCESS(err) ASSERT_EQ(VK_SUCCESS, err) << vk_result_string(err)
 

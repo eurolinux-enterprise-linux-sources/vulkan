@@ -162,14 +162,22 @@ class HelperFileOutputGenerator(OutputGenerator):
 
         if self.featureName == 'VK_VERSION_1_0' or self.featureName == 'VK_VERSION_1_1':
             return
+        name = self.featureName
         nameElem = interface[0][1]
-        name = nameElem.get('name')
-        if 'EXTENSION_NAME' not in name:
+        name_define = nameElem.get('name')
+        if 'EXTENSION_NAME' not in name_define:
             print("Error in vk.xml file -- extension name is not available")
-        if interface.get('type') == 'instance':
-            self.instance_extension_info[name] = self.featureExtraProtect
+        requires = interface.get('requires')
+        if requires is not None:
+            required_extensions = requires.split(',')
         else:
-            self.device_extension_info[name] = self.featureExtraProtect
+            required_extensions = list()
+        info = { 'define': name_define, 'ifdef':self.featureExtraProtect, 'reqs':required_extensions }
+        if interface.get('type') == 'instance':
+            self.instance_extension_info[name] = info
+        else:
+            self.device_extension_info[name] = info
+
     #
     # Override parent class to be notified of the end of an extension
     def endFeature(self):
@@ -184,7 +192,7 @@ class HelperFileOutputGenerator(OutputGenerator):
         if self.helper_file_type == 'enum_string_header':
             value_set = set()
             for elem in groupElem.findall('enum'):
-                if elem.get('supported') != 'disabled' and elem.get('alias') == None:
+                if elem.get('supported') != 'disabled' and elem.get('alias') is None:
                     value_set.add(elem.get('name'))
             self.enum_output += self.GenerateEnumStringConversion(groupName, value_set)
         elif self.helper_file_type == 'object_types_header':
@@ -273,9 +281,9 @@ class HelperFileOutputGenerator(OutputGenerator):
                 decoratedName = '{}/{}'.format(*match.group(2, 3))
         else:
             # Matches expressions similar to 'latexmath : [dataSize \over 4]'
-            match = re.match(r'latexmath\s*\:\s*\[\s*(\w+)\s*\\over\s*(\d+)\s*\]', source)
-            name = match.group(1)
-            decoratedName = '{}/{}'.format(*match.group(1, 2))
+            match = re.match(r'latexmath\s*\:\s*\[\s*(\\textrm\{)?(\w+)\}?\s*\\over\s*(\d+)\s*\]', source)
+            name = match.group(2)
+            decoratedName = '{}/{}'.format(*match.group(2, 3))
         return name, decoratedName
     #
     # Retrieve the value of the len tag
@@ -297,7 +305,7 @@ class HelperFileOutputGenerator(OutputGenerator):
             result = str(result).replace('::', '->')
         return result
     #
-    # Check if a structure is or contains a dispatchable (dispatchable = True) or 
+    # Check if a structure is or contains a dispatchable (dispatchable = True) or
     # non-dispatchable (dispatchable = False) handle
     def TypeContainsObjectHandle(self, handle_type, dispatchable):
         if dispatchable:
@@ -429,7 +437,7 @@ class HelperFileOutputGenerator(OutputGenerator):
         for item in self.structMembers:
             if self.NeedSafeStruct(item) == True:
                 safe_struct_header += '\n'
-                if item.ifdef_protect != None:
+                if item.ifdef_protect is not None:
                     safe_struct_header += '#ifdef %s\n' % item.ifdef_protect
                 safe_struct_header += 'struct safe_%s {\n' % (item.name)
                 for member in item.members:
@@ -455,7 +463,7 @@ class HelperFileOutputGenerator(OutputGenerator):
                 safe_struct_header += '    %s *ptr() { return reinterpret_cast<%s *>(this); }\n' % (item.name, item.name)
                 safe_struct_header += '    %s const *ptr() const { return reinterpret_cast<%s const *>(this); }\n' % (item.name, item.name)
                 safe_struct_header += '};\n'
-                if item.ifdef_protect != None:
+                if item.ifdef_protect is not None:
                     safe_struct_header += '#endif // %s\n' % item.ifdef_protect
         return safe_struct_header
     #
@@ -464,127 +472,177 @@ class HelperFileOutputGenerator(OutputGenerator):
 
         V_1_0_instance_extensions_promoted_to_core = [
             'vk_khr_device_group_creation',
-            'vk_khr_external_memory_capabilities',
             'vk_khr_external_fence_capabilities',
+            'vk_khr_external_memory_capabilities',
             'vk_khr_external_semaphore_capabilities',
             'vk_khr_get_physical_device_properties_2',
             ]
 
         V_1_0_device_extensions_promoted_to_core = [
+            'vk_khr_16bit_storage',
             'vk_khr_bind_memory_2',
-            'vk_khr_device_group',
+            'vk_khr_dedicated_allocation',
             'vk_khr_descriptor_update_template',
-            'vk_khr_sampler_ycbcr_conversion',
-            'vk_khr_get_memory_requirements_2',
-            'vk_khr_maintenance3',
-            'vk_khr_maintenance1',
-            'vk_khr_multiview',
+            'vk_khr_device_group',
+            'vk_khr_external_fence',
             'vk_khr_external_memory',
             'vk_khr_external_semaphore',
-            'vk_khr_16bit_storage',
-            'vk_khr_external_fence',
+            'vk_khr_get_memory_requirements_2',
+            'vk_khr_maintenance1',
             'vk_khr_maintenance2',
+            'vk_khr_maintenance3',
+            'vk_khr_multiview',
+            'vk_khr_relaxed_block_layout',
+            'vk_khr_sampler_ycbcr_conversion',
+            'vk_khr_shader_draw_parameters',
+            'vk_khr_storage_buffer_storage_class',
             'vk_khr_variable_pointers',
-            'vk_khr_dedicated_allocation',
             ]
 
-        extension_helper_header = '\n'
-        extension_helper_header += '#ifndef VK_EXTENSION_HELPER_H_\n'
-        extension_helper_header += '#define VK_EXTENSION_HELPER_H_\n'
-        struct  = '\n'
-        extension_helper_header += '#include <vulkan/vulkan.h>\n'
-        extension_helper_header += '#include <string.h>\n'
-        extension_helper_header += '#include <utility>\n'
-        extension_helper_header += '\n'
-        extension_helper_header += '\n'
-        extension_dict = dict()
-        promoted_ext_list = []
+        output = [
+            '',
+            '#ifndef VK_EXTENSION_HELPER_H_',
+            '#define VK_EXTENSION_HELPER_H_',
+            '#include <string>',
+            '#include <unordered_map>',
+            '#include <utility>',
+            '',
+            '#include <vulkan/vulkan.h>',
+            '']
+
+        def guarded(ifdef, value):
+            if ifdef is not None:
+                return '\n'.join([ '#ifdef %s' % ifdef, value, '#endif' ])
+            else:
+                return value
+
         for type in ['Instance', 'Device']:
+            struct_type = '%sExtensions' % type
             if type == 'Instance':
                 extension_dict = self.instance_extension_info
                 promoted_ext_list = V_1_0_instance_extensions_promoted_to_core
-                struct += 'struct InstanceExtensions { \n'
+                struct_decl = 'struct %s {' % struct_type
+                instance_struct_type = struct_type
             else:
                 extension_dict = self.device_extension_info
                 promoted_ext_list = V_1_0_device_extensions_promoted_to_core
-                struct += 'struct DeviceExtensions : public InstanceExtensions { \n'
-            for ext_name, ifdef in extension_dict.items():
-                bool_name = ext_name.lower()
-                bool_name = re.sub('_extension_name', '', bool_name)
-                struct += '    bool %s{false};\n' % bool_name
-            struct += '\n'
+                struct_decl = 'struct %s : public %s {' % (struct_type, instance_struct_type)
+
+            extension_items = sorted(extension_dict.items())
+
+            field_name = { ext_name: re.sub('_extension_name', '', info['define'].lower()) for ext_name, info in extension_items }
             if type == 'Instance':
-                struct += '    uint32_t NormalizeApiVersion(uint32_t specified_version) {\n'
-                struct += '        uint32_t api_version = (specified_version < VK_API_VERSION_1_1) ? VK_API_VERSION_1_0 : VK_API_VERSION_1_1;\n'
-                struct += '        return api_version;\n'
-                struct += '    }\n'
-                struct += '\n'
-
-                struct += '    uint32_t InitFromInstanceCreateInfo(uint32_t requested_api_version, const VkInstanceCreateInfo *pCreateInfo) {\n'
+                instance_field_name = field_name
+                instance_extension_dict = extension_dict
             else:
-                struct += '    uint32_t InitFromDeviceCreateInfo(const InstanceExtensions *instance_extensions, uint32_t requested_api_version, const VkDeviceCreateInfo *pCreateInfo) {\n'
-            struct += '\n'
+                # Get complete field name and extension data for both Instance and Device extensions
+                field_name.update(instance_field_name)
+                extension_dict = extension_dict.copy()  # Don't modify the self.<dict> we're pointing to
+                extension_dict.update(instance_extension_dict)
 
-            struct += '        static const std::vector<const char *> V_1_0_promoted_%s_extensions = {\n' % type.lower()
-            for ext_name in promoted_ext_list:
-                struct += '            %s_EXTENSION_NAME,\n' % ext_name.upper()
-            struct += '        };\n'
-            struct += '\n'
-            struct += '        static const std::pair<char const *, bool %sExtensions::*> known_extensions[]{\n' % type
-            for ext_name, ifdef in extension_dict.items():
-                if ifdef is not None:
-                    struct += '#ifdef %s\n' % ifdef
-                bool_name = ext_name.lower()
-                bool_name = re.sub('_extension_name', '', bool_name)
-                struct += '            {%s, &%sExtensions::%s},\n' % (ext_name, type, bool_name)
-                if ifdef is not None:
-                    struct += '#endif\n'
-            struct += '        };\n'
-            struct += '\n'
-            struct += '        // Initialize struct data\n'
+            # Output the data member list
+            struct  = [struct_decl]
+            struct.extend([ '    bool %s{false};' % field_name[ext_name] for ext_name, info in extension_items])
 
-            for ext_name, ifdef in self.instance_extension_info.items():
-                bool_name = ext_name.lower()
-                bool_name = re.sub('_extension_name', '', bool_name)
-                if type == 'Device':
-                    struct += '        %s = instance_extensions->%s;\n' % (bool_name, bool_name)
-            struct += '\n'
-            struct += '        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {\n'
-            struct += '            for (auto ext : known_extensions) {\n'
-            struct += '                if (!strcmp(ext.first, pCreateInfo->ppEnabledExtensionNames[i])) {\n'
-            struct += '                    this->*(ext.second) = true;\n'
-            struct += '                    break;\n'
-            struct += '                }\n'
-            struct += '            }\n'
-            struct += '        }\n'
-            struct += '        uint32_t api_version = NormalizeApiVersion(requested_api_version);\n'
-            struct += '        if (api_version >= VK_API_VERSION_1_1) {\n'
-            struct += '            for (auto promoted_ext : V_1_0_promoted_%s_extensions) {\n' % type.lower()
-            struct += '                for (auto ext : known_extensions) {\n'
-            struct += '                    if (!strcmp(ext.first, promoted_ext)) {\n'
-            struct += '                        this->*(ext.second) = true;\n'
-            struct += '                        break;\n'
-            struct += '                    }\n'
-            struct += '                }\n'
-            struct += '            }\n'
-            struct += '        }\n'
-            struct += '        return api_version;\n'
-            struct += '    }\n'
-            struct += '};\n'
-            struct += '\n'
+            # Construct the extension information map -- mapping name to data member (field), and required extensions
+            # The map is contained within a static function member for portability reasons.
+            info_type = '%sInfo' % type
+            info_map_type = '%sMap' % info_type
+            req_type = '%sReq' % type
+            req_vec_type = '%sVec' % req_type
+            struct.extend([
+                '',
+                '    struct %s {' % req_type,
+                '        const bool %s::* enabled;' % struct_type,
+                '        const char *name;',
+                '    };',
+                '    typedef std::vector<%s> %s;' % (req_type, req_vec_type),
+                '    struct %s {' % info_type,
+                '       %s(bool %s::* state_, const %s requires_): state(state_), requires(requires_) {}' % ( info_type, struct_type, req_vec_type),
+                '       bool %s::* state;' % struct_type,
+                '       %s requires;' % req_vec_type,
+                '    };',
+                '',
+                '    typedef std::unordered_map<std::string,%s> %s;' % (info_type, info_map_type),
+                '    static const %s &get_info(const char *name) {' %info_type,
+                '        static const %s info_map = {' % info_map_type ])
+
+            field_format = '&' + struct_type + '::%s'
+            req_format = '{' + field_format+ ', %s}'
+            req_indent = '\n                           '
+            req_join = ',' + req_indent
+            info_format = ('            std::make_pair(%s, ' + info_type + '(' + field_format + ', {%s})),')
+            def format_info(ext_name, info):
+                reqs = req_join.join([req_format % (field_name[req], extension_dict[req]['define']) for req in info['reqs']])
+                return info_format % (info['define'], field_name[ext_name], '{%s}' % (req_indent + reqs) if reqs else '')
+
+            struct.extend([guarded(info['ifdef'], format_info(ext_name, info)) for ext_name, info in extension_items])
+            struct.extend([
+                '        };',
+                '',
+                '        static const %s empty_info {nullptr, %s()};' % (info_type, req_vec_type),
+                '        %s::const_iterator info = info_map.find(name);' % info_map_type,
+                '        if ( info != info_map.cend()) {',
+                '            return info->second;',
+                '        }',
+                '        return empty_info;',
+                '    }',
+                ''])
+
+            if type == 'Instance':
+                struct.extend([
+                    '    uint32_t NormalizeApiVersion(uint32_t specified_version) {',
+                    '        uint32_t api_version = (specified_version < VK_API_VERSION_1_1) ? VK_API_VERSION_1_0 : VK_API_VERSION_1_1;',
+                    '        return api_version;',
+                    '    }',
+                    '',
+                    '    uint32_t InitFromInstanceCreateInfo(uint32_t requested_api_version, const VkInstanceCreateInfo *pCreateInfo) {'])
+            else:
+                struct.extend([
+                    '    %s() = default;' % struct_type,
+                    '    %s(const %s& instance_ext) : %s(instance_ext) {}' % (struct_type, instance_struct_type, instance_struct_type),
+                    '',
+                    '    uint32_t InitFromDeviceCreateInfo(const %s *instance_extensions, uint32_t requested_api_version,' % instance_struct_type,
+                    '                                      const VkDeviceCreateInfo *pCreateInfo) {',
+                    '        // Initialize: this to defaults,  base class fields to input.',
+                    '        assert(instance_extensions);',
+                    '        *this = %s(*instance_extensions);' % struct_type])
+
+            struct.extend([
+                '',
+                '        static const std::vector<const char *> V_1_0_promoted_%s_extensions = {' % type.lower() ])
+            struct.extend(['            %s_EXTENSION_NAME,' % ext_name.upper() for ext_name in promoted_ext_list])
+            struct.extend([
+                '        };',
+                '',
+                '        // Initialize struct data, robust to invalid pCreateInfo',
+                '        if (pCreateInfo->ppEnabledExtensionNames) {',
+                '            for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {',
+                '                if (!pCreateInfo->ppEnabledExtensionNames[i]) continue;',
+                '                auto info = get_info(pCreateInfo->ppEnabledExtensionNames[i]);',
+                '                if(info.state) this->*(info.state) = true;',
+                '            }',
+                '        }',
+                '        uint32_t api_version = NormalizeApiVersion(requested_api_version);',
+                '        if (api_version >= VK_API_VERSION_1_1) {',
+                '            for (auto promoted_ext : V_1_0_promoted_%s_extensions) {' % type.lower(),
+                '                auto info = get_info(promoted_ext);',
+                '                assert(info.state);',
+                '                if (info.state) this->*(info.state) = true;',
+                '            }',
+                '        }',
+                '        return api_version;',
+                '    }',
+                '};'])
+
             # Output reference lists of instance/device extension names
-            struct += 'static const char * const k%sExtensionNames = \n' % type
-            for ext_name, ifdef in extension_dict.items():
-                if ifdef is not None:
-                    struct += '#ifdef %s\n' % ifdef
-                struct += '    %s\n' % ext_name
-                if ifdef is not None:
-                    struct += '#endif\n'
-            struct += ';\n\n'
-        extension_helper_header += struct
-        extension_helper_header += '\n'
-        extension_helper_header += '#endif // VK_EXTENSION_HELPER_H_\n'
-        return extension_helper_header
+            struct.extend(['', 'static const char * const k%sExtensionNames = ' % type])
+            struct.extend([guarded(info['ifdef'], '    %s' % info['define']) for ext_name, info in extension_items])
+            struct.extend([';', ''])
+            output.extend(struct)
+
+        output.extend(['', '#endif // VK_EXTENSION_HELPER_H_'])
+        return '\n'.join(output)
     #
     # Combine object types helper header file preamble with body text and return
     def GenerateObjectTypesHelperHeader(self):
@@ -745,7 +803,7 @@ class HelperFileOutputGenerator(OutputGenerator):
                 continue
             if item.name in wsi_structs:
                 continue
-            if item.ifdef_protect != None:
+            if item.ifdef_protect is not None:
                 safe_struct_body.append("#ifdef %s\n" % item.ifdef_protect)
             ss_name = "safe_%s" % item.name
             init_list = ''          # list of members in struct constructor initializer
@@ -1053,7 +1111,7 @@ class HelperFileOutputGenerator(OutputGenerator):
             init_copy = copy_construct_init.replace('src.', 'src->')
             init_construct = copy_construct_txt.replace('src.', 'src->')
             safe_struct_body.append("\nvoid %s::initialize(const %s* src)\n{\n%s%s}" % (ss_name, ss_name, init_copy, init_construct))
-            if item.ifdef_protect != None:
+            if item.ifdef_protect is not None:
                 safe_struct_body.append("#endif // %s\n" % item.ifdef_protect)
         return "\n".join(safe_struct_body)
     #
@@ -1145,7 +1203,7 @@ class HelperFileOutputGenerator(OutputGenerator):
             if not info:
                 continue
 
-            if item.ifdef_protect != None:
+            if item.ifdef_protect is not None:
                 code.append('#ifdef %s' % item.ifdef_protect)
 
             code.append('// Map type {} to id {}'.format(typename, info.value))
@@ -1153,7 +1211,7 @@ class HelperFileOutputGenerator(OutputGenerator):
                 id_decl=id_decl, id_member=id_member))
             code.append(idmap_format.format(template=idmap, typename=typename, id_value=info.value, typedef=type_member))
 
-            if item.ifdef_protect != None:
+            if item.ifdef_protect is not None:
                 code.append('#endif // %s' % item.ifdef_protect)
 
         # Generate utilities for all types
@@ -1182,4 +1240,3 @@ class HelperFileOutputGenerator(OutputGenerator):
             return self.GenerateTypeMapHelperHeader()
         else:
             return 'Bad Helper File Generator Option %s' % self.helper_file_type
-

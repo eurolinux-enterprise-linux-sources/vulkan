@@ -21,7 +21,9 @@
  * Author: Mark Lobodzinski <mark@lunarg.com>
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,9 +42,6 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     ptr_instance->wsi_win32_surface_enabled = false;
 #endif  // VK_USE_PLATFORM_WIN32_KHR
-#ifdef VK_USE_PLATFORM_MIR_KHR
-    ptr_instance->wsi_mir_surface_enabled = false;
-#endif  // VK_USE_PLATFORM_MIR_KHR
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
     ptr_instance->wsi_wayland_surface_enabled = false;
 #endif  // VK_USE_PLATFORM_WAYLAND_KHR
@@ -63,6 +62,7 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
 #endif  // VK_USE_PLATFORM_IOS_MVK
 
     ptr_instance->wsi_display_enabled = false;
+    ptr_instance->wsi_display_props2_enabled = false;
 
     for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
         if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_SURFACE_EXTENSION_NAME) == 0) {
@@ -75,12 +75,6 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
             continue;
         }
 #endif  // VK_USE_PLATFORM_WIN32_KHR
-#ifdef VK_USE_PLATFORM_MIR_KHR
-        if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_MIR_SURFACE_EXTENSION_NAME) == 0) {
-            ptr_instance->wsi_mir_surface_enabled = true;
-            continue;
-        }
-#endif  // VK_USE_PLATFORM_MIR_KHR
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
         if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME) == 0) {
             ptr_instance->wsi_wayland_surface_enabled = true;
@@ -121,22 +115,23 @@ void wsi_create_instance(struct loader_instance *ptr_instance, const VkInstanceC
             ptr_instance->wsi_display_enabled = true;
             continue;
         }
+        if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME) == 0) {
+            ptr_instance->wsi_display_props2_enabled = true;
+            continue;
+        }
     }
 }
 
 // Linux WSI surface extensions are not always compiled into the loader. (Assume
 // for Windows the KHR_win32_surface is always compiled into loader). A given
 // Linux build environment might not have the headers required for building one
-// of the four extensions  (Xlib, Xcb, Mir, Wayland).  Thus, need to check if
+// of the three extensions  (Xlib, Xcb, Wayland).  Thus, need to check if
 // the built loader actually supports the particular Linux surface extension.
 // If not supported by the built loader it will not be included in the list of
 // enumerated instance extensions.  This solves the issue where an ICD or layer
 // advertises support for a given Linux surface extension but the loader was not
 // built to support the extension.
 bool wsi_unsupported_instance_extension(const VkExtensionProperties *ext_prop) {
-#ifndef VK_USE_PLATFORM_MIR_KHR
-    if (!strcmp(ext_prop->extensionName, "VK_KHR_mir_surface")) return true;
-#endif  // VK_USE_PLATFORM_MIR_KHR
 #ifndef VK_USE_PLATFORM_WAYLAND_KHR
     if (!strcmp(ext_prop->extensionName, "VK_KHR_wayland_surface")) return true;
 #endif  // VK_USE_PLATFORM_WAYLAND_KHR
@@ -588,120 +583,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL terminator_GetPhysicalDeviceWin32PresentationSupp
     return icd_term->dispatch.GetPhysicalDeviceWin32PresentationSupportKHR(phys_dev_term->phys_dev, queueFamilyIndex);
 }
 #endif  // VK_USE_PLATFORM_WIN32_KHR
-
-#ifdef VK_USE_PLATFORM_MIR_KHR
-
-// Functions for the VK_KHR_mir_surface extension:
-
-// This is the trampoline entrypoint for CreateMirSurfaceKHR
-LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateMirSurfaceKHR(VkInstance instance,
-                                                                   const VkMirSurfaceCreateInfoKHR *pCreateInfo,
-                                                                   const VkAllocationCallbacks *pAllocator,
-                                                                   VkSurfaceKHR *pSurface) {
-    const VkLayerInstanceDispatchTable *disp;
-    disp = loader_get_instance_layer_dispatch(instance);
-    VkResult res;
-
-    res = disp->CreateMirSurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
-    return res;
-}
-
-// This is the instance chain terminator function for CreateMirSurfaceKHR
-VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateMirSurfaceKHR(VkInstance instance, const VkMirSurfaceCreateInfoKHR *pCreateInfo,
-                                                              const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface) {
-    VkResult vkRes = VK_SUCCESS;
-    VkIcdSurface *pIcdSurface = NULL;
-    uint32_t i = 0;
-
-    // First, check to ensure the appropriate extension was enabled:
-    struct loader_instance *ptr_instance = loader_get_instance(instance);
-    if (!ptr_instance->wsi_mir_surface_enabled) {
-        loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
-                   "VK_KHR_mir_surface extension not enabled.  vkCreateMirSurfaceKHR not executed!\n");
-        vkRes = VK_ERROR_EXTENSION_NOT_PRESENT;
-        goto out;
-    }
-
-    // Next, if so, proceed with the implementation of this function:
-    pIcdSurface = AllocateIcdSurfaceStruct(ptr_instance, sizeof(pIcdSurface->mir_surf.base), sizeof(pIcdSurface->mir_surf));
-    if (pIcdSurface == NULL) {
-        vkRes = VK_ERROR_OUT_OF_HOST_MEMORY;
-        goto out;
-    }
-
-    pIcdSurface->mir_surf.base.platform = VK_ICD_WSI_PLATFORM_MIR;
-    pIcdSurface->mir_surf.connection = pCreateInfo->connection;
-    pIcdSurface->mir_surf.mirSurface = pCreateInfo->mirSurface;
-
-    // Loop through each ICD and determine if they need to create a surface
-    for (struct loader_icd_term *icd_term = ptr_instance->icd_terms; icd_term != NULL; icd_term = icd_term->next, i++) {
-        if (icd_term->scanned_icd->interface_version >= ICD_VER_SUPPORTS_ICD_SURFACE_KHR) {
-            if (NULL != icd_term->dispatch.CreateMirSurfaceKHR) {
-                vkRes = icd_term->dispatch.CreateMirSurfaceKHR(icd_term->instance, pCreateInfo, pAllocator,
-                                                               &pIcdSurface->real_icd_surfaces[i]);
-                if (VK_SUCCESS != vkRes) {
-                    goto out;
-                }
-            }
-        }
-    }
-
-    *pSurface = (VkSurfaceKHR)pIcdSurface;
-
-out:
-
-    if (VK_SUCCESS != vkRes && NULL != pIcdSurface) {
-        if (NULL != pIcdSurface->real_icd_surfaces) {
-            i = 0;
-            for (struct loader_icd_term *icd_term = ptr_instance->icd_terms; icd_term != NULL; icd_term = icd_term->next, i++) {
-                if ((VkSurfaceKHR)NULL != pIcdSurface->real_icd_surfaces[i] && NULL != icd_term->dispatch.DestroySurfaceKHR) {
-                    icd_term->dispatch.DestroySurfaceKHR(icd_term->instance, pIcdSurface->real_icd_surfaces[i], pAllocator);
-                }
-            }
-            loader_instance_heap_free(ptr_instance, pIcdSurface->real_icd_surfaces);
-        }
-        loader_instance_heap_free(ptr_instance, pIcdSurface);
-    }
-
-    return vkRes;
-}
-
-// This is the trampoline entrypoint for
-// GetPhysicalDeviceMirPresentationSupportKHR
-LOADER_EXPORT VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceMirPresentationSupportKHR(VkPhysicalDevice physicalDevice,
-                                                                                          uint32_t queueFamilyIndex,
-                                                                                          MirConnection *connection) {
-    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
-    const VkLayerInstanceDispatchTable *disp;
-    disp = loader_get_instance_layer_dispatch(physicalDevice);
-    VkBool32 res = disp->GetPhysicalDeviceMirPresentationSupportKHR(unwrapped_phys_dev, queueFamilyIndex, connection);
-    return res;
-}
-
-// This is the instance chain terminator function for
-// GetPhysicalDeviceMirPresentationSupportKHR
-VKAPI_ATTR VkBool32 VKAPI_CALL terminator_GetPhysicalDeviceMirPresentationSupportKHR(VkPhysicalDevice physicalDevice,
-                                                                                     uint32_t queueFamilyIndex,
-                                                                                     MirConnection *connection) {
-    // First, check to ensure the appropriate extension was enabled:
-    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
-    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
-    struct loader_instance *ptr_instance = (struct loader_instance *)icd_term->this_instance;
-    if (!ptr_instance->wsi_mir_surface_enabled) {
-        loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
-                   "VK_KHR_mir_surface extension not enabled.  vkGetPhysicalDeviceMirPresentationSupportKHR not executed!\n");
-        return VK_SUCCESS;
-    }
-
-    if (NULL == icd_term->dispatch.GetPhysicalDeviceMirPresentationSupportKHR) {
-        loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
-                   "ICD for selected physical device is not exporting vkGetPhysicalDeviceMirPresentationSupportKHR!\n");
-        assert(false && "loader: null GetPhysicalDeviceMirPresentationSupportKHR ICD pointer");
-    }
-
-    return icd_term->dispatch.GetPhysicalDeviceMirPresentationSupportKHR(phys_dev_term->phys_dev, queueFamilyIndex, connection);
-}
-#endif  // VK_USE_PLATFORM_MIR_KHR
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
 
@@ -1595,6 +1476,188 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
     return disp->AcquireNextImage2KHR(device, pAcquireInfo, pImageIndex);
 }
 
+// ---- VK_KHR_get_display_properties2 extension trampoline/terminators
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayProperties2KHR(VkPhysicalDevice physicalDevice,
+                                                                                      uint32_t *pPropertyCount,
+                                                                                      VkDisplayProperties2KHR *pProperties) {
+    const VkLayerInstanceDispatchTable *disp;
+    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
+    disp = loader_get_instance_layer_dispatch(physicalDevice);
+    return disp->GetPhysicalDeviceDisplayProperties2KHR(unwrapped_phys_dev, pPropertyCount, pProperties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetPhysicalDeviceDisplayProperties2KHR(VkPhysicalDevice physicalDevice,
+                                                                                 uint32_t *pPropertyCount,
+                                                                                 VkDisplayProperties2KHR *pProperties) {
+    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
+    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
+
+    // If the function is available in the driver, just call into it
+    if (icd_term->dispatch.GetPhysicalDeviceDisplayProperties2KHR != NULL) {
+        return icd_term->dispatch.GetPhysicalDeviceDisplayProperties2KHR(phys_dev_term->phys_dev, pPropertyCount, pProperties);
+    }
+
+    // We have to emulate the function.
+    loader_log(icd_term->this_instance, VK_DEBUG_REPORT_INFORMATION_BIT_EXT, 0,
+               "vkGetPhysicalDeviceDisplayProperties2KHR: Emulating call in ICD \"%s\"", icd_term->scanned_icd->lib_name);
+
+    // If the icd doesn't support VK_KHR_display, then no properties are available
+    if (icd_term->dispatch.GetPhysicalDeviceDisplayPropertiesKHR == NULL) {
+        *pPropertyCount = 0;
+        return VK_SUCCESS;
+    }
+
+    // If we aren't writing to pProperties, then emulation is straightforward
+    if (pProperties == NULL || *pPropertyCount == 0) {
+        return icd_term->dispatch.GetPhysicalDeviceDisplayPropertiesKHR(phys_dev_term->phys_dev, pPropertyCount, NULL);
+    }
+
+    // If we do have to write to pProperties, then we need to write to a temporary array of VkDisplayPropertiesKHR and copy it
+    VkDisplayPropertiesKHR *properties = loader_stack_alloc(*pPropertyCount * sizeof(VkDisplayPropertiesKHR));
+    if (properties == NULL) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    VkResult res = icd_term->dispatch.GetPhysicalDeviceDisplayPropertiesKHR(phys_dev_term->phys_dev, pPropertyCount, properties);
+    if (res < 0) {
+        return res;
+    }
+    for (uint32_t i = 0; i < *pPropertyCount; ++i) {
+        memcpy(&pProperties[i].displayProperties, &properties[i], sizeof(VkDisplayPropertiesKHR));
+    }
+    return res;
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPlaneProperties2KHR(
+    VkPhysicalDevice physicalDevice, uint32_t *pPropertyCount, VkDisplayPlaneProperties2KHR *pProperties) {
+    const VkLayerInstanceDispatchTable *disp;
+    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
+    disp = loader_get_instance_layer_dispatch(physicalDevice);
+    return disp->GetPhysicalDeviceDisplayPlaneProperties2KHR(unwrapped_phys_dev, pPropertyCount, pProperties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetPhysicalDeviceDisplayPlaneProperties2KHR(VkPhysicalDevice physicalDevice,
+                                                                                      uint32_t *pPropertyCount,
+                                                                                      VkDisplayPlaneProperties2KHR *pProperties) {
+    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
+    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
+
+    // If the function is available in the driver, just call into it
+    if (icd_term->dispatch.GetPhysicalDeviceDisplayPlaneProperties2KHR != NULL) {
+        return icd_term->dispatch.GetPhysicalDeviceDisplayPlaneProperties2KHR(phys_dev_term->phys_dev, pPropertyCount, pProperties);
+    }
+
+    // We have to emulate the function.
+    loader_log(icd_term->this_instance, VK_DEBUG_REPORT_INFORMATION_BIT_EXT, 0,
+               "vkGetPhysicalDeviceDisplayPlaneProperties2KHR: Emulating call in ICD \"%s\"", icd_term->scanned_icd->lib_name);
+
+    // If the icd doesn't support VK_KHR_display, then no properties are available
+    if (icd_term->dispatch.GetPhysicalDeviceDisplayPlanePropertiesKHR == NULL) {
+        *pPropertyCount = 0;
+        return VK_SUCCESS;
+    }
+
+    // If we aren't writing to pProperties, then emulation is straightforward
+    if (pProperties == NULL || *pPropertyCount == 0) {
+        return icd_term->dispatch.GetPhysicalDeviceDisplayPlanePropertiesKHR(phys_dev_term->phys_dev, pPropertyCount, NULL);
+    }
+
+    // If we do have to write to pProperties, then we need to write to a temporary array of VkDisplayPlanePropertiesKHR and copy it
+    VkDisplayPlanePropertiesKHR *properties = loader_stack_alloc(*pPropertyCount * sizeof(VkDisplayPlanePropertiesKHR));
+    if (properties == NULL) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    VkResult res =
+        icd_term->dispatch.GetPhysicalDeviceDisplayPlanePropertiesKHR(phys_dev_term->phys_dev, pPropertyCount, properties);
+    if (res < 0) {
+        return res;
+    }
+    for (uint32_t i = 0; i < *pPropertyCount; ++i) {
+        memcpy(&pProperties[i].displayPlaneProperties, &properties[i], sizeof(VkDisplayPlanePropertiesKHR));
+    }
+    return res;
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayModeProperties2KHR(VkPhysicalDevice physicalDevice, VkDisplayKHR display,
+                                                                            uint32_t *pPropertyCount,
+                                                                            VkDisplayModeProperties2KHR *pProperties) {
+    const VkLayerInstanceDispatchTable *disp;
+    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
+    disp = loader_get_instance_layer_dispatch(physicalDevice);
+    return disp->GetDisplayModeProperties2KHR(unwrapped_phys_dev, display, pPropertyCount, pProperties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetDisplayModeProperties2KHR(VkPhysicalDevice physicalDevice, VkDisplayKHR display,
+                                                                       uint32_t *pPropertyCount,
+                                                                       VkDisplayModeProperties2KHR *pProperties) {
+    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
+    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
+
+    // If the function is available in the driver, just call into it
+    if (icd_term->dispatch.GetDisplayModeProperties2KHR != NULL) {
+        return icd_term->dispatch.GetDisplayModeProperties2KHR(phys_dev_term->phys_dev, display, pPropertyCount, pProperties);
+    }
+
+    // We have to emulate the function.
+    loader_log(icd_term->this_instance, VK_DEBUG_REPORT_INFORMATION_BIT_EXT, 0,
+               "vkGetDisplayModeProperties2KHR: Emulating call in ICD \"%s\"", icd_term->scanned_icd->lib_name);
+
+    // If the icd doesn't support VK_KHR_display, then no properties are available
+    if (icd_term->dispatch.GetDisplayModePropertiesKHR == NULL) {
+        *pPropertyCount = 0;
+        return VK_SUCCESS;
+    }
+
+    // If we aren't writing to pProperties, then emulation is straightforward
+    if (pProperties == NULL || *pPropertyCount == 0) {
+        return icd_term->dispatch.GetDisplayModePropertiesKHR(phys_dev_term->phys_dev, display, pPropertyCount, NULL);
+    }
+
+    // If we do have to write to pProperties, then we need to write to a temporary array of VkDisplayModePropertiesKHR and copy it
+    VkDisplayModePropertiesKHR *properties = loader_stack_alloc(*pPropertyCount * sizeof(VkDisplayModePropertiesKHR));
+    if (properties == NULL) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    VkResult res = icd_term->dispatch.GetDisplayModePropertiesKHR(phys_dev_term->phys_dev, display, pPropertyCount, properties);
+    if (res < 0) {
+        return res;
+    }
+    for (uint32_t i = 0; i < *pPropertyCount; ++i) {
+        memcpy(&pProperties[i].displayModeProperties, &properties[i], sizeof(VkDisplayModePropertiesKHR));
+    }
+    return res;
+}
+
+LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayPlaneCapabilities2KHR(VkPhysicalDevice physicalDevice,
+                                                                               const VkDisplayPlaneInfo2KHR *pDisplayPlaneInfo,
+                                                                               VkDisplayPlaneCapabilities2KHR *pCapabilities) {
+    const VkLayerInstanceDispatchTable *disp;
+    VkPhysicalDevice unwrapped_phys_dev = loader_unwrap_physical_device(physicalDevice);
+    disp = loader_get_instance_layer_dispatch(physicalDevice);
+    return disp->GetDisplayPlaneCapabilities2KHR(unwrapped_phys_dev, pDisplayPlaneInfo, pCapabilities);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL terminator_GetDisplayPlaneCapabilities2KHR(VkPhysicalDevice physicalDevice,
+                                                                          const VkDisplayPlaneInfo2KHR *pDisplayPlaneInfo,
+                                                                          VkDisplayPlaneCapabilities2KHR *pCapabilities) {
+    struct loader_physical_device_term *phys_dev_term = (struct loader_physical_device_term *)physicalDevice;
+    struct loader_icd_term *icd_term = phys_dev_term->this_icd_term;
+
+    // If the function is abailable in the driver, just call into it
+    if (icd_term->dispatch.GetDisplayPlaneCapabilities2KHR != NULL) {
+        return icd_term->dispatch.GetDisplayPlaneCapabilities2KHR(phys_dev_term->phys_dev, pDisplayPlaneInfo, pCapabilities);
+    }
+
+    // We have to emulate the function.
+    loader_log(icd_term->this_instance, VK_DEBUG_REPORT_INFORMATION_BIT_EXT, 0,
+               "vkGetDisplayPlaneCapabilities2KHR: Emulating call in ICD \"%s\"", icd_term->scanned_icd->lib_name);
+
+    // Just call into the old version of the function.
+    // If the icd doesn't support VK_KHR_display, there are zero planes and this call is invalid (and will crash)
+    return icd_term->dispatch.GetDisplayPlaneCapabilitiesKHR(phys_dev_term->phys_dev, pDisplayPlaneInfo->mode,
+                                                             pDisplayPlaneInfo->planeIndex, &pCapabilities->capabilities);
+}
+
 bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char *name, void **addr) {
     *addr = NULL;
 
@@ -1678,18 +1741,6 @@ bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char
         return true;
     }
 #endif  // VK_USE_PLATFORM_WIN32_KHR
-#ifdef VK_USE_PLATFORM_MIR_KHR
-
-    // Functions for the VK_KHR_mir_surface extension:
-    if (!strcmp("vkCreateMirSurfaceKHR", name)) {
-        *addr = ptr_instance->wsi_mir_surface_enabled ? (void *)vkCreateMirSurfaceKHR : NULL;
-        return true;
-    }
-    if (!strcmp("vkGetPhysicalDeviceMirPresentationSupportKHR", name)) {
-        *addr = ptr_instance->wsi_mir_surface_enabled ? (void *)vkGetPhysicalDeviceMirPresentationSupportKHR : NULL;
-        return true;
-    }
-#endif  // VK_USE_PLATFORM_MIR_KHR
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
 
     // Functions for the VK_KHR_wayland_surface extension:
@@ -1784,6 +1835,24 @@ bool wsi_swapchain_instance_gpa(struct loader_instance *ptr_instance, const char
     // Functions for KHR_display_swapchain extension:
     if (!strcmp("vkCreateSharedSwapchainsKHR", name)) {
         *addr = (void *)vkCreateSharedSwapchainsKHR;
+        return true;
+    }
+
+    // Functions for KHR_get_display_properties2
+    if (!strcmp("vkGetPhysicalDeviceDisplayProperties2KHR", name)) {
+        *addr = ptr_instance->wsi_display_props2_enabled ? (void *)vkGetPhysicalDeviceDisplayProperties2KHR : NULL;
+        return true;
+    }
+    if (!strcmp("vkGetPhysicalDeviceDisplayPlaneProperties2KHR", name)) {
+        *addr = ptr_instance->wsi_display_props2_enabled ? (void *)vkGetPhysicalDeviceDisplayPlaneProperties2KHR : NULL;
+        return true;
+    }
+    if (!strcmp("vkGetDisplayModeProperties2KHR", name)) {
+        *addr = ptr_instance->wsi_display_props2_enabled ? (void *)vkGetDisplayModeProperties2KHR : NULL;
+        return true;
+    }
+    if (!strcmp("vkGetDisplayPlaneCapabilities2KHR", name)) {
+        *addr = ptr_instance->wsi_display_props2_enabled ? (void *)vkGetDisplayPlaneCapabilities2KHR : NULL;
         return true;
     }
 
